@@ -132,6 +132,25 @@ class Dashboard extends Component
         $this->refresh();
     }
 
+    public function closePosition(int $tradeId): void
+    {
+        $trade = Trade::where('bot_id', $this->bot->id)
+            ->where('id', $tradeId)
+            ->where('status', 'open')
+            ->first();
+
+        if (! $trade) {
+            $this->successMsg = 'Posisi tidak ditemukan.';
+            return;
+        }
+
+        $service = app(BotService::class);
+        $service->closeAllPositions($this->bot, $trade);
+
+        $this->successMsg = "Posisi {$trade->binance_pair} berhasil dijual.";
+        $this->refresh();
+    }
+
     public function closeAllPositions(): void
     {
         $service = app(BotService::class);

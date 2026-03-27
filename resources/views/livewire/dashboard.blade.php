@@ -243,6 +243,7 @@
                             <th class="text-right px-4 py-3">Take Profit</th>
                             <th class="text-right px-4 py-3">Modal IDR</th>
                             <th class="text-right px-4 py-3">Waktu</th>
+                            <th class="px-4 py-3"></th>
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-50">
@@ -267,6 +268,16 @@
                                 </td>
                                 <td class="px-4 py-3.5 text-right text-slate-400 text-xs">
                                     {{ \Carbon\Carbon::parse($trade['created_at'])->diffForHumans() }}
+                                </td>
+                                <td class="px-4 py-3.5 text-right">
+                                    <button wire:click="closePosition({{ $trade['id'] }})"
+                                            wire:loading.attr="disabled"
+                                            wire:confirm="Jual {{ $trade['binance_pair'] }} sekarang?"
+                                            class="px-2.5 py-1 rounded-lg text-xs font-semibold
+                                                   bg-red-50 text-red-600 hover:bg-red-100 disabled:opacity-50 transition">
+                                        <span wire:loading.remove wire:target="closePosition({{ $trade['id'] }})">Jual</span>
+                                        <span wire:loading wire:target="closePosition({{ $trade['id'] }})">...</span>
+                                    </button>
                                 </td>
                             </tr>
                         @endforeach

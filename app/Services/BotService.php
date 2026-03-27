@@ -277,11 +277,27 @@ class BotService
 
         if (! $bot->isSimulation()) {
             $indodax = $this->makeIndodaxService($bot);
-            $order   = $indodax->sell($indodaxPair, (float) $trade->quantity, $currentIdrPrice);
+
+            // Cek saldo aktual sebelum sell
+            $balances       = $indodax->getBalance();
+            $cryptoKey      = strtolower(explode('_', $indodaxPair)[0]);
+            $actualBalance  = (float) ($balances[$cryptoKey] ?? 0);
+            $wantToSell     = (float) $trade->quantity;
+
+            if ($actualBalance <= 0) {
+                $this->log($bot, 'error', "SELL dibatalkan: saldo {$cryptoKey} di Indodax = 0");
+                return;
+            }
+
+            // Pakai saldo aktual jika lebih kecil dari qty trade (misal sudah terjual sebagian)
+            $sellQty = min($wantToSell, $actualBalance);
+
+            $order           = $indodax->sell($indodaxPair, $sellQty, $currentIdrPrice);
             $exchangeOrderId = $order['return']['order_id'] ?? null;
 
             if (! $exchangeOrderId) {
-                $this->log($bot, 'error', "Order SELL gagal di Indodax: {$indodaxPair}");
+                $errMsg = $order['error'] ?? $order['error_code'] ?? 'unknown error';
+                $this->log($bot, 'error', "Order SELL gagal di Indodax: {$indodaxPair} — {$errMsg}");
                 return;
             }
         }
@@ -357,10 +373,13 @@ class BotService
      * Close all open positions at current market price.
      * Returns number of positions closed.
      */
-    public function closeAllPositions(Bot $bot): int
+    public function closeAllPositions(Bot $bot, ?Trade $singleTrade = null): int
     {
-        $trades = Trade::where('bot_id', $bot->id)->where('status', 'open')->get();
-        $count  = 0;
+        $trades = $singleTrade
+            ? collect([$singleTrade])
+            : Trade::where('bot_id', $bot->id)->where('status', 'open')->get();
+
+        $count = 0;
 
         foreach ($trades as $trade) {
             try {

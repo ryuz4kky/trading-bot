@@ -68,7 +68,7 @@ class IndodaxService
             'pair'   => $pair,
             'type'   => 'sell',
             'price'  => (int) $price,
-            $crypto  => $quantity,
+            $crypto  => number_format($quantity, 8, '.', ''),
         ]) ?? [];
     }
 
@@ -137,7 +137,8 @@ class IndodaxService
                 Log::warning("IndodaxService: API error for {$method}", [
                     'error' => $data['error'] ?? 'unknown',
                 ]);
-                return null;
+                // Return error data so callers can read the message
+                return $data;
             }
 
             return $data;
