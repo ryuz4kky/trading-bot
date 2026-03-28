@@ -142,14 +142,17 @@
                 @foreach($results as $result)
                     @php
                         $signal      = $result['signal'];
-                        $indicators  = $result['indicators'] ?? [];
-                        $idrPrice    = $result['idr_price'] ?? 0;
-                        $hasError    = ! empty($result['error']);
-                        $displayPair = $result['display_pair'] ?? $result['pair'];
-                        $emaFast     = $indicators['ema_fast'] ?? 0;
-                        $emaSlow     = $indicators['ema_slow'] ?? 0;
-                        $rsi         = $indicators['rsi'] ?? 50;
-                        $isBullish   = $indicators['is_bullish'] ?? false;
+                        $indicators    = $result['indicators'] ?? [];
+                        $idrPrice      = $result['idr_price'] ?? 0;
+                        $hasError      = ! empty($result['error']);
+                        $displayPair   = $result['display_pair'] ?? $result['pair'];
+                        $emaFast       = $indicators['ema_fast'] ?? 0;
+                        $emaSlow       = $indicators['ema_slow'] ?? 0;
+                        $rsi           = $indicators['rsi'] ?? 50;
+                        $isBullish     = $indicators['is_bullish'] ?? false;
+                        $adx           = $indicators['adx'] ?? 0;
+                        $emaSpreadPct  = $indicators['ema_spread_pct'] ?? 0;
+                        $isTrending    = $adx >= 20 && $emaSpreadPct >= 0.15;
                     @endphp
 
                     <div class="bg-white rounded-2xl border shadow-sm overflow-hidden
@@ -197,6 +200,16 @@
                         @if($hasError)
                             <div class="px-5 py-4 text-sm text-red-600 bg-red-50">{{ $result['error'] }}</div>
                         @elseif(! empty($indicators))
+                            {{-- Market Condition Badge --}}
+                            <div class="px-5 pt-3 pb-0 flex items-center gap-2">
+                                <span class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Kondisi Market:</span>
+                                @if($isTrending)
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">TRENDING ✓</span>
+                                @else
+                                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">SIDEWAYS — bot tidak akan entry</span>
+                                @endif
+                            </div>
+
                             {{-- Indicators Grid --}}
                             <div class="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 divide-x divide-slate-100">
                                 <div class="px-5 py-4">
@@ -240,15 +253,20 @@
                                 </div>
 
                                 <div class="px-5 py-4">
-                                    <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">
-                                        Candle {{ $bot->settings?->kline_interval ?? '5m' }}
-                                    </p>
-                                    <p class="font-bold text-sm {{ $isBullish ? 'text-emerald-600' : 'text-red-500' }}">
-                                        {{ $isBullish ? '▲ Bullish' : '▼ Bearish' }}
-                                    </p>
-                                    <p class="text-[11px] mt-1 text-slate-400">
-                                        Close {{ $isBullish ? '>' : '<' }} Open
-                                    </p>
+                                    <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">ADX (Trend)</p>
+                                    @php
+                                        $adxColor = $adx >= 25 ? 'text-emerald-600' : ($adx >= 20 ? 'text-amber-600' : 'text-red-500');
+                                        $adxLabel = $adx >= 25 ? 'Kuat' : ($adx >= 20 ? 'Lemah' : 'Sideways');
+                                        $adxWidth = min(100, $adx * 2);
+                                    @endphp
+                                    <p class="font-bold text-slate-900 text-sm">{{ number_format($adx, 1) }}</p>
+                                    <div class="flex items-center gap-1.5 mt-1.5">
+                                        <div class="flex-1 h-1 bg-slate-100 rounded-full overflow-hidden">
+                                            <div class="h-1 rounded-full {{ $adx >= 25 ? 'bg-emerald-500' : ($adx >= 20 ? 'bg-amber-400' : 'bg-red-400') }}"
+                                                 style="width:{{ $adxWidth }}%"></div>
+                                        </div>
+                                        <span class="text-[10px] font-semibold {{ $adxColor }}">{{ $adxLabel }}</span>
+                                    </div>
                                 </div>
                             </div>
 
@@ -257,9 +275,10 @@
                                 @php
                                     $currentPrice = $idrPrice > 0 ? $idrPrice : ($indicators['current_price'] ?? 0);
                                     $conditions   = [
+                                        [$isTrending,               'Market Trending (ADX ' . number_format($adx,1) . ')'],
                                         [$currentPrice > $emaSlow,  'Harga > EMA' . ($bot->settings?->ema_slow ?? 50)],
                                         [$emaFast > $emaSlow,       'EMA' . ($bot->settings?->ema_fast ?? 20) . ' > EMA' . ($bot->settings?->ema_slow ?? 50)],
-                                        [$rsi >= 40 && $rsi <= 60,  'RSI 40–60 (' . $rsi . ')'],
+                                        [$rsi >= 35 && $rsi <= 60,  'RSI 35–60 (' . $rsi . ')'],
                                         [$isBullish,                'Candle Bullish'],
                                     ];
                                     $metCount = count(array_filter($conditions, fn($c) => $c[0]));
@@ -268,7 +287,7 @@
                                     <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400">Kondisi Strategi</p>
                                     <span class="text-[10px] font-bold px-1.5 py-0.5 rounded
                                         {{ $metCount === 4 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500' }}">
-                                        {{ $metCount }}/4 terpenuhi
+                                        {{ $metCount }}/5 terpenuhi
                                     </span>
                                 </div>
                                 <div class="flex flex-wrap gap-1.5">

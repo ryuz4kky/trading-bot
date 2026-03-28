@@ -213,8 +213,27 @@ class BotService
         $quantity = $tradeAmount / $idrPrice;
         $slPct    = (float) ($settings->stop_loss_percent ?? 3);
         $tpPct    = (float) ($settings->take_profit_percent ?? 5);
-        $slPrice  = $idrPrice * (1 - $slPct / 100);
-        $tpPrice  = $idrPrice * (1 + $tpPct / 100);
+
+        // Hybrid SL/TP: ATR sebagai referensi, dibatasi setting user
+        $atr = (float) ($indicators['atr'] ?? 0);
+        if ($atr > 0 && ($indicators['current_price'] ?? 0) > 0) {
+            $usdtToIdr = $idrPrice / $indicators['current_price'];
+            $atrIdr    = $atr * $usdtToIdr;
+
+            $slByAtr = $idrPrice - ($atrIdr * 1.5);  // ATR × 1.5
+            $tpByAtr = $idrPrice + ($atrIdr * 2.5);  // ATR × 2.5
+
+            $slByPct = $idrPrice * (1 - $slPct / 100);
+            $tpByPct = $idrPrice * (1 + $tpPct / 100);
+
+            // Ambil SL yang lebih ketat (harga lebih tinggi = lebih aman)
+            $slPrice = max($slByAtr, $slByPct);
+            // Ambil TP yang lebih konservatif (harga lebih rendah = lebih realistis)
+            $tpPrice = min($tpByAtr, $tpByPct);
+        } else {
+            $slPrice = $idrPrice * (1 - $slPct / 100);
+            $tpPrice = $idrPrice * (1 + $tpPct / 100);
+        }
 
         $exchangeOrderId = null;
 
