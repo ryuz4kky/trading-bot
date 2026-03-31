@@ -265,7 +265,9 @@ class BotSettings extends Component
 
             $mode = $this->bot->isSimulation() ? 'simulation' : 'real';
 
-            // Simpan semua currency (IDR + crypto holdings) beserta locked (balance_hold)
+            // Simpan semua currency dari Indodax
+            // locked diambil dari balance_hold API, tapi kalau 0 tetap di-set 0
+            // (balance_hold Indodax kadang stale meski tidak ada open order)
             foreach ($balance as $currency => $amount) {
                 $amount = (float) $amount;
                 $locked = (float) ($balanceHold[$currency] ?? 0);
@@ -279,6 +281,19 @@ class BotSettings extends Component
                     ['amount' => $amount, 'locked' => $locked]
                 );
             }
+
+            // Hapus hold di DB untuk currency yang tidak ada di balance_hold Indodax
+            // (samakan dengan kondisi real exchange)
+            Balance::where('bot_id', $this->bot->id)
+                ->where('mode', $mode)
+                ->where('locked', '>', 0)
+                ->get()
+                ->each(function ($b) use ($balanceHold) {
+                    $currency = strtolower($b->currency);
+                    if (! isset($balanceHold[$currency]) || (float) $balanceHold[$currency] <= 0) {
+                        $b->update(['locked' => 0]);
+                    }
+                });
 
             // Update simulation_balance dari IDR jika mode simulasi
             if ($this->bot->isSimulation()) {
@@ -325,10 +340,12 @@ class BotSettings extends Component
             $currency    = strtolower($holding->currency);
             $binancePair = strtoupper($currency) . 'USDT';
             $indodaxPair = $currency . '_idr';
-            $available   = (float) $holding->amount - (float) $holding->locked;
+            // Gunakan total amount — balance_hold Indodax kadang non-zero
+            // meski tidak ada open order (dust hold internal)
+            $available = (float) $holding->amount;
 
             if ($available <= 0) {
-                $skipReasons[] = strtoupper($currency) . ': available=0 (semua dalam hold)';
+                $skipReasons[] = strtoupper($currency) . ': jumlah 0';
                 continue;
             }
 
