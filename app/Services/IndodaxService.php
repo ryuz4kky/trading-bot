@@ -34,6 +34,24 @@ class IndodaxService
     }
 
     /**
+     * Get full balance info including balance_hold.
+     * Returns ['balance' => [...], 'balance_hold' => [...]]
+     */
+    public function getFullBalanceInfo(): array
+    {
+        $response = $this->privateRequest('getInfo');
+
+        if (! $response || ! isset($response['return']['balance'])) {
+            return ['balance' => [], 'balance_hold' => []];
+        }
+
+        return [
+            'balance'      => $response['return']['balance'] ?? [],
+            'balance_hold' => $response['return']['balance_hold'] ?? [],
+        ];
+    }
+
+    /**
      * Place a buy order on Indodax.
      *
      * @param string $pair      e.g. btc_idr

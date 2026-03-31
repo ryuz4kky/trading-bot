@@ -90,6 +90,40 @@
         </div>
         @endif
 
+        {{-- Win Rate per Strategi --}}
+        @if($strategyStats->isNotEmpty())
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
+            <h3 class="text-sm font-semibold text-slate-800 mb-3">Win Rate per Strategi</h3>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                @foreach($strategyStats as $stat)
+                @php
+                    $labels = [
+                        'ema_crossover'      => 'EMA Crossover',
+                        'rsi_mean_reversion' => 'RSI Mean Reversion',
+                        'bb_squeeze'         => 'BB Squeeze',
+                    ];
+                @endphp
+                <div class="p-4 rounded-xl border border-slate-100 bg-slate-50">
+                    <p class="text-xs font-semibold text-slate-600">{{ $labels[$stat['strategy']] ?? $stat['strategy'] }}</p>
+                    <p class="text-2xl font-bold mt-1 {{ $stat['win_rate'] >= 55 ? 'text-emerald-600' : ($stat['win_rate'] >= 45 ? 'text-amber-600' : 'text-red-500') }}">
+                        {{ $stat['win_rate'] }}%
+                    </p>
+                    <div class="w-full bg-slate-200 rounded-full h-1.5 mt-2">
+                        <div class="h-1.5 rounded-full {{ $stat['win_rate'] >= 55 ? 'bg-emerald-500' : ($stat['win_rate'] >= 45 ? 'bg-amber-400' : 'bg-red-400') }}"
+                             style="width: {{ min(100, $stat['win_rate']) }}%"></div>
+                    </div>
+                    <p class="text-[11px] text-slate-400 mt-1.5">
+                        {{ $stat['wins'] }}/{{ $stat['total'] }} trade &nbsp;·&nbsp;
+                        <span class="{{ $stat['total_pl'] >= 0 ? 'text-emerald-600' : 'text-red-500' }}">
+                            {{ $stat['total_pl'] >= 0 ? '+' : '' }}Rp {{ number_format($stat['total_pl'], 0, ',', '.') }}
+                        </span>
+                    </p>
+                </div>
+                @endforeach
+            </div>
+        </div>
+        @endif
+
         {{-- Filter --}}
         <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
             <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">

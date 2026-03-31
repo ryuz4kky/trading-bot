@@ -9,7 +9,10 @@
       "Bash(xargs php:*)",
       "Bash(grep -v \"No syntax errors\" echo \"---\" php artisan route:list)",
       "Bash(curl -sk --max-time 10 \"https://indodax.com/api/ticker_all\")",
-      "Bash(curl -sv \"http://localhost:8000/cron/run/change_this_to_a_random_secret_key\")"
+      "Bash(curl -sv \"http://localhost:8000/cron/run/change_this_to_a_random_secret_key\")",
+      "Bash(wc -l /Users/yusofzaky/Documents/dev/trading-bot/app/**/*.php)",
+      "Bash(mysql -u root trading_bot2 -e \"SHOW COLUMNS FROM trades;\")",
+      "Bash(mysql -u root -e \"SHOW COLUMNS FROM trading_bot2.trades;\")"
     ]
   }
 }

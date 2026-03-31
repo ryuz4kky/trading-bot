@@ -40,6 +40,12 @@ class BotService
             number_format($portfolio['free_idr'], 0, ',', '.')
         ));
 
+        if ($this->isMaxDailyLossReached($bot, $portfolio['total_capital'])) {
+            $this->log($bot, 'warning', 'Max daily loss tercapai. Bot berhenti membuka posisi baru hari ini.');
+            $this->monitorPositions($bot);
+            return;
+        }
+
         $this->monitorPositions($bot);
 
         foreach ($bot->settings->pairs as $binancePair) {
@@ -106,7 +112,7 @@ class BotService
         $klines = $this->binance->getKlines(
             $binancePair,
             $settings->kline_interval ?? '5m',
-            $settings->kline_limit    ?? 100
+            $this->resolveKlineLimit($settings)
         );
 
         if (empty($klines)) {
@@ -118,7 +124,8 @@ class BotService
             $klines,
             $settings->ema_fast   ?? 20,
             $settings->ema_slow   ?? 50,
-            $settings->rsi_period ?? 14
+            $settings->rsi_period ?? 14,
+            $settings->bb_period  ?? 20
         );
 
         $idrPrice = $this->binance->getIdrPrice($binancePair);
@@ -126,7 +133,11 @@ class BotService
             $idrPrice = round(($indicators['current_price'] ?? 0) * 16000);
         }
 
-        $signal = $this->strategy->analyze($indicators);
+        $signal = $this->strategy->analyze(
+            $indicators,
+            $bot->settings?->strategy ?? 'ema_crossover',
+            (float) ($bot->settings?->volume_min_ratio ?? 1.2)
+        );
 
         return array_merge($base, [
             'signal'     => $signal,
@@ -167,6 +178,9 @@ class BotService
             ->first();
 
         if ($signal === 'buy' && ! $openTrade) {
+            if ($this->isInCooldown($bot, $binancePair)) {
+                return;
+            }
             $this->executeBuy($bot, $binancePair, $scan['indodax_pair'], $idrPrice, $scan['indicators']);
         } elseif ($signal === 'sell' && $openTrade) {
             $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
@@ -261,6 +275,8 @@ class BotService
             'stop_loss_price'   => $slPrice,
             'take_profit_price' => $tpPrice,
             'signal'            => 'buy',
+            'strategy'          => $bot->settings?->strategy ?? 'ema_crossover',
+            'peak_price'        => $idrPrice,
             'indicators'        => $indicators,
             'exchange_order_id' => $exchangeOrderId,
         ]);
@@ -366,6 +382,9 @@ class BotService
             return;
         }
 
+        $trailingEnabled = (bool) ($bot->settings?->trailing_sl_enabled ?? false);
+        $trailingPct     = (float) ($bot->settings?->trailing_sl_percent ?? 1.5);
+
         foreach ($openTrades as $trade) {
             $currentPrice = $this->binance->getCurrentIdrPrice($trade->binance_pair);
 
@@ -373,11 +392,37 @@ class BotService
                 continue;
             }
 
+            // ── Trailing Stop Loss ────────────────────────────────────────────
+            if ($trailingEnabled && $currentPrice > $trade->entry_price) {
+                $peakPrice = (float) ($trade->peak_price ?? $trade->entry_price);
+
+                if ($currentPrice > $peakPrice) {
+                    $peakPrice = $currentPrice;
+                    $newSl     = $peakPrice * (1 - $trailingPct / 100);
+
+                    if ($newSl > (float) $trade->stop_loss_price) {
+                        $trade->update([
+                            'peak_price'      => $peakPrice,
+                            'stop_loss_price' => $newSl,
+                        ]);
+                        $this->log($bot, 'info', sprintf(
+                            'Trailing SL %s diperbarui → Rp %s (peak: Rp %s)',
+                            $trade->binance_pair,
+                            number_format($newSl, 0, ',', '.'),
+                            number_format($peakPrice, 0, ',', '.')
+                        ));
+                    }
+                }
+            }
+
+            // ── Exit check berdasarkan stop_loss_price & take_profit_price ───
             $reason = $this->strategy->checkExitCondition(
                 (float) $trade->entry_price,
                 $currentPrice,
                 (float) $bot->settings->stop_loss_percent,
-                (float) $bot->settings->take_profit_percent
+                (float) $bot->settings->take_profit_percent,
+                (float) $trade->stop_loss_price,
+                (float) $trade->take_profit_price,
             );
 
             if ($reason) {
@@ -450,6 +495,100 @@ class BotService
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────
+
+    /**
+     * Cek apakah pair sedang dalam cooldown setelah stop loss.
+     * Cooldown = cooldown_candles × durasi interval (dalam menit).
+     */
+    private function isInCooldown(Bot $bot, string $binancePair): bool
+    {
+        $cooldownCandles = (int) ($bot->settings?->cooldown_candles ?? 3);
+
+        if ($cooldownCandles <= 0) {
+            return false;
+        }
+
+        $intervalMinutes = match ($bot->settings?->kline_interval ?? '15m') {
+            '1m'  => 1,
+            '3m'  => 3,
+            '5m'  => 5,
+            '15m' => 15,
+            '30m' => 30,
+            '1h'  => 60,
+            default => 15,
+        };
+
+        $cooldownMinutes = $cooldownCandles * $intervalMinutes;
+
+        $lastSl = Trade::where('bot_id', $bot->id)
+            ->where('binance_pair', $binancePair)
+            ->where('status', 'closed')
+            ->where('close_reason', 'stop_loss')
+            ->orderByDesc('closed_at')
+            ->first();
+
+        if (! $lastSl) {
+            return false;
+        }
+
+        $inCooldown = $lastSl->closed_at->diffInMinutes(now()) < $cooldownMinutes;
+
+        if ($inCooldown) {
+            $remaining = $cooldownMinutes - $lastSl->closed_at->diffInMinutes(now());
+            $this->log($bot, 'info', sprintf(
+                'Cooldown aktif untuk %s — tunggu %d menit lagi (SL %s)',
+                $binancePair,
+                $remaining,
+                $lastSl->closed_at->format('H:i')
+            ));
+        }
+
+        return $inCooldown;
+    }
+
+    /**
+     * Auto-hitung kline limit berdasarkan strategi dan interval.
+     * Warmup = periode terpanjang × 2 (untuk indikator stabil).
+     * Minimal 150, maksimal 300 (batas API Gate.io).
+     */
+    private function resolveKlineLimit($settings): int
+    {
+        $strategy  = $settings?->strategy ?? 'ema_crossover';
+        $emaSlow   = (int) ($settings?->ema_slow  ?? 50);
+        $bbPeriod  = (int) ($settings?->bb_period ?? 20);
+        $rsiPeriod = (int) ($settings?->rsi_period ?? 14);
+
+        $warmup = match ($strategy) {
+            'ema_crossover'      => max($emaSlow, $rsiPeriod) * 2 + 30,
+            'rsi_mean_reversion' => max($bbPeriod, $rsiPeriod) * 3 + 30,
+            'bb_squeeze'         => max($bbPeriod, $rsiPeriod) * 3 + 50,
+            default              => 150,
+        };
+
+        return max(150, min($warmup, 300));
+    }
+
+    /**
+     * Cek apakah total kerugian hari ini sudah melewati batas max_daily_loss_percent.
+     */
+    private function isMaxDailyLossReached(Bot $bot, float $totalCapital): bool
+    {
+        $maxLossPct = (float) ($bot->settings?->max_daily_loss_percent ?? 5);
+
+        if ($maxLossPct <= 0 || $totalCapital <= 0) {
+            return false;
+        }
+
+        $todayLoss = (float) Trade::where('bot_id', $bot->id)
+            ->where('status', 'closed')
+            ->whereDate('closed_at', today())
+            ->where('profit_loss', '<', 0)
+            ->sum('profit_loss');
+
+        $maxLossIdr = $totalCapital * ($maxLossPct / 100);
+
+        return abs($todayLoss) >= $maxLossIdr;
+    }
 
     private function makeIndodaxService(Bot $bot): IndodaxService
     {

@@ -91,6 +91,21 @@ class ProfitHistory extends Component
             ->distinct()
             ->pluck('binance_pair');
 
-        return view('livewire.profit-history', compact('trades', 'pairs'));
+        // Win rate per strategi
+        $strategyStats = Trade::where('bot_id', $this->bot->id)
+            ->where('status', 'closed')
+            ->whereNotNull('strategy')
+            ->selectRaw('strategy, COUNT(*) as total, SUM(profit_loss > 0) as wins, SUM(profit_loss) as total_pl')
+            ->groupBy('strategy')
+            ->get()
+            ->map(fn($s) => [
+                'strategy'  => $s->strategy,
+                'total'     => $s->total,
+                'wins'      => (int) $s->wins,
+                'win_rate'  => $s->total > 0 ? round($s->wins / $s->total * 100, 1) : 0,
+                'total_pl'  => (float) $s->total_pl,
+            ]);
+
+        return view('livewire.profit-history', compact('trades', 'pairs', 'strategyStats'));
     }
 }

@@ -7,6 +7,7 @@ use App\Models\Bot;
 use App\Models\BotLog;
 use App\Models\BotSetting;
 use App\Models\Trade;
+use App\Services\BinanceService;
 use App\Services\IndodaxService;
 use Livewire\Component;
 
@@ -29,6 +30,13 @@ class BotSettings extends Component
     public string $klineInterval     = '5m';
     public string $maxPositions      = '4';
     public string $simulationBalance = '10000000';
+    public string $strategy             = 'ema_crossover';
+    public string $bbPeriod             = '20';
+    public string $maxDailyLossPercent  = '5';
+    public bool   $trailingSlEnabled    = false;
+    public string $trailingSlPercent    = '1.5';
+    public string $cooldownCandles      = '3';
+    public string $volumeMinRatio       = '1.2';
 
     // API key form
     public bool   $showApiForm  = false;
@@ -68,6 +76,13 @@ class BotSettings extends Component
             $this->rsiPeriod         = (string) $s->rsi_period;
             $this->klineInterval     = $s->kline_interval;
             $this->maxPositions      = (string) ($s->max_positions ?? 4);
+            $this->strategy          = $s->strategy ?? 'ema_crossover';
+            $this->bbPeriod             = (string) ($s->bb_period ?? 20);
+            $this->maxDailyLossPercent  = (string) (float) ($s->max_daily_loss_percent ?? 5);
+            $this->trailingSlEnabled    = (bool) ($s->trailing_sl_enabled ?? false);
+            $this->trailingSlPercent    = (string) (float) ($s->trailing_sl_percent ?? 1.5);
+            $this->cooldownCandles      = (string) ($s->cooldown_candles ?? 3);
+            $this->volumeMinRatio       = (string) (float) ($s->volume_min_ratio ?? 1.2);
         }
     }
 
@@ -78,6 +93,12 @@ class BotSettings extends Component
         $this->validate([
             'botName'            => 'required|string|max:100',
             'mode'               => 'required|in:simulation,real',
+            'strategy'           => 'required|in:ema_crossover,rsi_mean_reversion,bb_squeeze',
+            'bbPeriod'              => 'required|integer|min:5|max:50',
+            'maxDailyLossPercent'   => 'required|numeric|min:1|max:50',
+            'trailingSlPercent'     => 'required_if:trailingSlEnabled,true|numeric|min:0.1|max:10',
+            'cooldownCandles'       => 'required|integer|min:0|max:20',
+            'volumeMinRatio'        => 'required|numeric|min:0.5|max:5',
             'riskPercent'        => 'required|numeric|min:0.1|max:10',
             'stopLossPercent'    => 'required|numeric|min:0.1|max:20',
             'takeProfitPercent'  => 'required|numeric|min:0.1|max:50',
@@ -116,12 +137,46 @@ class BotSettings extends Component
                 'rsi_period'          => (int) $this->rsiPeriod,
                 'kline_interval'      => $this->klineInterval,
                 'max_positions'       => (int) $this->maxPositions,
+                'strategy'                => $this->strategy,
+                'bb_period'               => (int) $this->bbPeriod,
+                'max_daily_loss_percent'  => (float) $this->maxDailyLossPercent,
+                'trailing_sl_enabled'     => $this->trailingSlEnabled,
+                'trailing_sl_percent'     => (float) $this->trailingSlPercent,
+                'cooldown_candles'        => (int) $this->cooldownCandles,
+                'volume_min_ratio'        => (float) $this->volumeMinRatio,
             ]
         );
 
         $this->successMessage = 'Settings berhasil disimpan.';
         $this->bot = Bot::with('settings')->find($this->bot->id);
         $this->syncFromModel();
+    }
+
+    public function applyRecommended(): void
+    {
+        match ($this->strategy) {
+            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 3, tp: 6),
+            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 4, tp: 8),
+            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 3, tp: 6),
+        };
+    }
+
+    private function applyValues(
+        int    $emaFast  = 20,
+        int    $emaSlow  = 50,
+        int    $rsi      = 14,
+        int    $bb       = 20,
+        string $interval = '15m',
+        float  $sl       = 3,
+        float  $tp       = 6,
+    ): void {
+        $this->emaFast           = (string) $emaFast;
+        $this->emaSlow           = (string) $emaSlow;
+        $this->rsiPeriod         = (string) $rsi;
+        $this->bbPeriod          = (string) $bb;
+        $this->klineInterval     = $interval;
+        $this->stopLossPercent   = (string) $sl;
+        $this->takeProfitPercent = (string) $tp;
     }
 
     public function selectAllPairs(): void
@@ -195,33 +250,41 @@ class BotSettings extends Component
         }
 
         try {
-            $indodax  = new IndodaxService($this->bot->indodax_api_key, $this->bot->indodax_api_secret);
-            $balances = $indodax->getBalance();
+            $indodax = new IndodaxService($this->bot->indodax_api_key, $this->bot->indodax_api_secret);
+            $info    = $indodax->getFullBalanceInfo();
 
-            if (empty($balances)) {
+            $balance     = $info['balance'];
+            $balanceHold = $info['balance_hold'];
+
+            if (empty($balance)) {
                 $this->syncError = 'Gagal mengambil saldo. Periksa API Key atau koneksi internet.';
                 return;
             }
 
-            $this->indodaxBalances = $balances;
+            $this->indodaxBalances = $balance;
 
-            // Set IDR balance ke bot
-            $idrAmount = (float) ($balances['idr'] ?? 0);
+            $mode = $this->bot->isSimulation() ? 'simulation' : 'real';
 
-            if ($idrAmount > 0) {
-                if ($this->bot->isSimulation()) {
-                    // Update simulation balance
+            // Simpan semua currency (IDR + crypto holdings) beserta locked (balance_hold)
+            foreach ($balance as $currency => $amount) {
+                $amount = (float) $amount;
+                $locked = (float) ($balanceHold[$currency] ?? 0);
+
+                if ($amount <= 0 && $locked <= 0) {
+                    continue;
+                }
+
+                Balance::updateOrCreate(
+                    ['bot_id' => $this->bot->id, 'mode' => $mode, 'currency' => strtoupper($currency)],
+                    ['amount' => $amount, 'locked' => $locked]
+                );
+            }
+
+            // Update simulation_balance dari IDR jika mode simulasi
+            if ($this->bot->isSimulation()) {
+                $idrAmount = (float) ($balance['idr'] ?? 0);
+                if ($idrAmount > 0) {
                     $this->bot->update(['simulation_balance' => $idrAmount]);
-                    Balance::updateOrCreate(
-                        ['bot_id' => $this->bot->id, 'mode' => 'simulation', 'currency' => 'IDR'],
-                        ['amount' => $idrAmount, 'locked' => 0]
-                    );
-                } else {
-                    // Update real balance
-                    Balance::updateOrCreate(
-                        ['bot_id' => $this->bot->id, 'mode' => 'real', 'currency' => 'IDR'],
-                        ['amount' => $idrAmount, 'locked' => 0]
-                    );
                 }
             }
 
@@ -232,6 +295,102 @@ class BotSettings extends Component
         } catch (\Throwable $e) {
             $this->syncError = 'Error: ' . $e->getMessage();
         }
+    }
+
+    public function importHoldingsAsTrades(): void
+    {
+        $this->syncError   = '';
+        $this->syncSuccess = false;
+
+        $mode     = $this->bot->isSimulation() ? 'simulation' : 'real';
+        $settings = $this->bot->settings;
+        $binance  = app(BinanceService::class);
+
+        // Reverse map: currency (uppercase) -> binance pair
+        // e.g. BTC -> BTCUSDT
+        $holdings = Balance::where('bot_id', $this->bot->id)
+            ->where('mode', $mode)
+            ->where('currency', '!=', 'IDR')
+            ->get();
+
+        if ($holdings->isEmpty()) {
+            $this->syncError = 'Tidak ada crypto holdings yang tersimpan. Sync saldo dulu.';
+            return;
+        }
+
+        $imported     = 0;
+        $skipReasons  = [];
+
+        foreach ($holdings as $holding) {
+            $currency    = strtolower($holding->currency);
+            $binancePair = strtoupper($currency) . 'USDT';
+            $indodaxPair = $currency . '_idr';
+            $available   = (float) $holding->amount - (float) $holding->locked;
+
+            if ($available <= 0) {
+                $skipReasons[] = strtoupper($currency) . ': available=0 (semua dalam hold)';
+                continue;
+            }
+
+            // Ambil harga IDR saat ini
+            $entryPrice = $binance->getCurrentIdrPrice($binancePair);
+
+            if ($entryPrice <= 0) {
+                $skipReasons[] = strtoupper($currency) . ': harga IDR tidak ditemukan (pair tidak didukung)';
+                continue;
+            }
+
+            $amountIdr       = $available * $entryPrice;
+            $slPercent       = (float) ($settings?->stop_loss_percent ?? 3);
+            $tpPercent       = (float) ($settings?->take_profit_percent ?? 6);
+            $stopLossPrice   = $entryPrice * (1 - $slPercent / 100);
+            $takeProfitPrice = $entryPrice * (1 + $tpPercent / 100);
+
+            $existingTrade = Trade::where('bot_id', $this->bot->id)
+                ->where('pair', $indodaxPair)
+                ->where('status', 'open')
+                ->first();
+
+            if ($existingTrade) {
+                $existingTrade->update([
+                    'quantity'          => $available,
+                    'amount_idr'        => $amountIdr,
+                    'entry_price'       => $entryPrice,
+                    'stop_loss_price'   => $stopLossPrice,
+                    'take_profit_price' => $takeProfitPrice,
+                ]);
+            } else {
+                Trade::create([
+                    'bot_id'            => $this->bot->id,
+                    'pair'              => $indodaxPair,
+                    'binance_pair'      => $binancePair,
+                    'type'              => 'buy',
+                    'mode'              => $mode,
+                    'status'            => 'open',
+                    'entry_price'       => $entryPrice,
+                    'quantity'          => $available,
+                    'amount_idr'        => $amountIdr,
+                    'stop_loss_price'   => $stopLossPrice,
+                    'take_profit_price' => $takeProfitPrice,
+                    'signal'            => 'buy',
+                    'close_reason'      => null,
+                ]);
+            }
+
+            $imported++;
+        }
+
+        if ($imported > 0) {
+            $this->syncSuccess = true;
+        }
+
+        if (! empty($skipReasons)) {
+            $this->syncError = 'Dilewati: ' . implode(' | ', $skipReasons);
+        } elseif ($imported === 0) {
+            $this->syncError = 'Tidak ada yang bisa diimport.';
+        }
+
+        $this->bot = Bot::with(['settings', 'balances'])->find($this->bot->id);
     }
 
     public function resetAllData(): void

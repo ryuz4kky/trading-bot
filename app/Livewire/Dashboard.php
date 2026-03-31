@@ -15,7 +15,8 @@ class Dashboard extends Component
     // Displayed state (refreshed via wire:poll)
     public string $botStatus   = 'stopped';
     public string $botMode     = 'simulation';
-    public float  $idrBalance  = 0;
+    public float  $idrBalance     = 0;
+    public float  $idrBalanceHold = 0;
     public float  $todayProfit = 0;
     public int    $openCount   = 0;
     public array  $openTrades  = [];
@@ -91,7 +92,21 @@ class Dashboard extends Component
                 ->where('mode', 'simulation')
                 ->where('currency', 'IDR')
                 ->first();
-            $this->idrBalance = $balance ? (float) $balance->amount : 0;
+            $this->idrBalance     = $balance ? (float) $balance->amount : 0;
+            $this->idrBalanceHold = 0;
+        } else {
+            try {
+                $indodax = new \App\Services\IndodaxService(
+                    $this->bot->indodax_api_key ?? '',
+                    $this->bot->indodax_api_secret ?? ''
+                );
+                $info = $indodax->getFullBalanceInfo();
+                $this->idrBalance     = (float) ($info['balance']['idr'] ?? 0);
+                $this->idrBalanceHold = (float) ($info['balance_hold']['idr'] ?? 0);
+            } catch (\Throwable) {
+                $this->idrBalance     = 0;
+                $this->idrBalanceHold = 0;
+            }
         }
     }
 
@@ -186,6 +201,22 @@ class Dashboard extends Component
 
     public function render()
     {
-        return view('livewire.dashboard');
+        $binance        = app(\App\Services\BinanceService::class);
+        $openTradesWithPl = array_map(function ($trade) use ($binance) {
+            $currentPrice = $binance->getCurrentIdrPrice($trade['binance_pair']);
+            $trade['current_price'] = $currentPrice;
+            if ($currentPrice > 0 && $trade['entry_price'] > 0) {
+                $pl = ($currentPrice - $trade['entry_price']) * $trade['quantity'];
+                $trade['unrealized_pl']        = $pl;
+                $trade['unrealized_pl_percent'] = round((($currentPrice - $trade['entry_price']) / $trade['entry_price']) * 100, 2);
+            } else {
+                $trade['current_price']        = 0;
+                $trade['unrealized_pl']        = null;
+                $trade['unrealized_pl_percent'] = null;
+            }
+            return $trade;
+        }, $this->openTrades);
+
+        return view('livewire.dashboard', ['openTradesWithPl' => $openTradesWithPl]);
     }
 }

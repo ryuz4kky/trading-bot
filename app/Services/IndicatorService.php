@@ -178,14 +178,40 @@ class IndicatorService
     }
 
     /**
+     * Calculate Bollinger Bands (SMA ± 2×StdDev).
+     * Returns ['upper' => float, 'middle' => float, 'lower' => float]
+     */
+    public function calculateBollingerBands(array $prices, int $period = 20): array
+    {
+        $count = count($prices);
+
+        if ($count < $period) {
+            return ['upper' => 0.0, 'middle' => 0.0, 'lower' => 0.0];
+        }
+
+        $slice  = array_slice($prices, -$period);
+        $middle = array_sum($slice) / $period;
+
+        $variance = array_sum(array_map(fn($p) => ($p - $middle) ** 2, $slice)) / $period;
+        $stdDev   = sqrt($variance);
+
+        return [
+            'upper'  => round($middle + 2 * $stdDev, 8),
+            'middle' => round($middle, 8),
+            'lower'  => round($middle - 2 * $stdDev, 8),
+        ];
+    }
+
+    /**
      * Calculate all indicators from raw klines data.
-     * Returns ema_fast, ema_slow, rsi, atr, adx, ema_spread_pct, current_price, is_bullish.
+     * Returns ema_fast, ema_slow, rsi, atr, adx, ema_spread_pct, bb_*, current_price, is_bullish.
      */
     public function calculate(
         array $klines,
         int $emaFast = 20,
         int $emaSlow = 50,
-        int $rsiPeriod = 14
+        int $rsiPeriod = 14,
+        int $bbPeriod = 20
     ): array {
         if (empty($klines)) {
             return [
@@ -210,10 +236,18 @@ class IndicatorService
         $emaFastVal = $this->calculateEMA($closes, $emaFast);
         $emaSlowVal = $this->calculateEMA($closes, $emaSlow);
 
-        // Spread antar EMA sebagai % — kecil berarti sideways
         $emaSpreadPct = $emaSlowVal > 0
             ? round(abs($emaFastVal - $emaSlowVal) / $emaSlowVal * 100, 4)
             : 0.0;
+
+        $bb = $this->calculateBollingerBands($closes, $bbPeriod);
+
+        // Volume ratio: volume candle terakhir / rata-rata 20 candle
+        $volumes     = array_map(fn($k) => (float) $k[5], $klines);
+        $volSlice    = array_slice($volumes, -20);
+        $avgVolume   = count($volSlice) > 0 ? array_sum($volSlice) / count($volSlice) : 0;
+        $lastVolume  = end($volumes);
+        $volumeRatio = $avgVolume > 0 ? round($lastVolume / $avgVolume, 2) : 1.0;
 
         return [
             'ema_fast'       => $emaFastVal,
@@ -222,8 +256,12 @@ class IndicatorService
             'atr'            => $this->calculateATR($klines),
             'adx'            => $this->calculateADX($klines),
             'ema_spread_pct' => $emaSpreadPct,
+            'bb_upper'       => $bb['upper'],
+            'bb_middle'      => $bb['middle'],
+            'bb_lower'       => $bb['lower'],
             'current_price'  => $currentPrice,
             'is_bullish'     => $isBullish,
+            'volume_ratio'   => $volumeRatio,
             'valid'          => true,
         ];
     }

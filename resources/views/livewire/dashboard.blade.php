@@ -47,11 +47,16 @@
         {{-- Balance --}}
         <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-4">
             <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-                Saldo Bebas{{ $botMode === 'simulation' ? ' (Sim)' : '' }}
+                Saldo IDR{{ $botMode === 'simulation' ? ' (Sim)' : '' }}
             </p>
             <p class="text-lg font-bold text-slate-900">
                 Rp {{ number_format($idrBalance, 0, ',', '.') }}
             </p>
+            @if($botMode === 'real' && $idrBalanceHold > 0)
+                <p class="text-[11px] text-orange-500 mt-1">
+                    Hold: Rp {{ number_format($idrBalanceHold, 0, ',', '.') }}
+                </p>
+            @endif
         </div>
 
         {{-- Open Positions --}}
@@ -105,16 +110,22 @@
         </div>
 
         {{-- Stats row --}}
-        <div class="grid grid-cols-3 gap-3 mt-4 pt-4 border-t border-slate-100">
+        <div class="grid grid-cols-{{ $botMode === 'real' ? '4' : '3' }} gap-3 mt-4 pt-4 border-t border-slate-100">
             <div class="text-center">
                 <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Bebas</p>
                 <p class="text-sm font-bold text-emerald-600">Rp {{ number_format($idrBalance, 0, ',', '.') }}</p>
             </div>
+            @if($botMode === 'real')
             <div class="text-center border-x border-slate-100">
-                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Terkunci</p>
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Hold Indodax</p>
+                <p class="text-sm font-bold text-orange-500">Rp {{ number_format($idrBalanceHold, 0, ',', '.') }}</p>
+            </div>
+            @endif
+            <div class="text-center {{ $botMode === 'real' ? '' : 'border-x border-slate-100' }}">
+                <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Terkunci (Bot)</p>
                 <p class="text-sm font-bold text-amber-600">Rp {{ number_format($lockedIdr, 0, ',', '.') }}</p>
             </div>
-            <div class="text-center">
+            <div class="text-center {{ $botMode === 'real' ? 'border-l border-slate-100' : '' }}">
                 <p class="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">Total</p>
                 <p class="text-sm font-bold text-slate-800">Rp {{ number_format($totalCapital, 0, ',', '.') }}</p>
             </div>
@@ -239,6 +250,8 @@
                         <tr class="bg-slate-50 text-xs text-slate-500 font-semibold uppercase tracking-wide">
                             <th class="text-left px-5 py-3">Pair</th>
                             <th class="text-right px-4 py-3">Harga Masuk</th>
+                            <th class="text-right px-4 py-3">Harga Kini</th>
+                            <th class="text-right px-4 py-3">P/L</th>
                             <th class="text-right px-4 py-3">Stop Loss</th>
                             <th class="text-right px-4 py-3">Take Profit</th>
                             <th class="text-right px-4 py-3">Modal IDR</th>
@@ -247,7 +260,7 @@
                         </tr>
                     </thead>
                     <tbody class="divide-y divide-slate-50">
-                        @foreach($openTrades as $trade)
+                        @foreach($openTradesWithPl as $trade)
                             <tr class="hover:bg-slate-50/50 transition-colors">
                                 <td class="px-5 py-3.5">
                                     <span class="font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded text-xs">
@@ -256,6 +269,27 @@
                                 </td>
                                 <td class="px-4 py-3.5 text-right text-slate-700 font-mono text-xs">
                                     Rp {{ number_format($trade['entry_price'], 0, ',', '.') }}
+                                </td>
+                                <td class="px-4 py-3.5 text-right font-mono text-xs text-slate-700">
+                                    @if($trade['current_price'] > 0)
+                                        Rp {{ number_format($trade['current_price'], 0, ',', '.') }}
+                                    @else
+                                        <span class="text-slate-400">-</span>
+                                    @endif
+                                </td>
+                                <td class="px-4 py-3.5 text-right text-xs font-bold">
+                                    @if($trade['unrealized_pl'] !== null)
+                                        @php $pl = $trade['unrealized_pl']; $plp = $trade['unrealized_pl_percent']; @endphp
+                                        <span class="{{ $pl >= 0 ? 'text-emerald-600' : 'text-red-500' }}">
+                                            {{ $pl >= 0 ? '+' : '' }}Rp {{ number_format($pl, 0, ',', '.') }}
+                                        </span>
+                                        <br>
+                                        <span class="font-semibold text-[10px] {{ $plp >= 0 ? 'text-emerald-500' : 'text-red-400' }}">
+                                            {{ $plp >= 0 ? '+' : '' }}{{ $plp }}%
+                                        </span>
+                                    @else
+                                        <span class="text-slate-400">-</span>
+                                    @endif
                                 </td>
                                 <td class="px-4 py-3.5 text-right text-red-600 font-mono text-xs">
                                     Rp {{ number_format($trade['stop_loss_price'], 0, ',', '.') }}

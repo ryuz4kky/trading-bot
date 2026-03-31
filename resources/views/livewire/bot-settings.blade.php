@@ -171,8 +171,8 @@
 
             {{-- Money Management --}}
             <div>
-                <label class="block text-xs font-semibold text-slate-600 mb-2">Stop Loss & Take Profit</label>
-                <div class="grid grid-cols-2 gap-3">
+                <label class="block text-xs font-semibold text-slate-600 mb-2">Manajemen Risiko</label>
+                <div class="grid grid-cols-3 gap-3">
                     <div>
                         <label class="block text-[10px] text-slate-400 mb-1">Stop Loss (%)</label>
                         <input type="number" step="0.1" wire:model="stopLossPercent"
@@ -187,36 +187,156 @@
                                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         @error('takeProfitPercent') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
                     </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            Max Loss Harian (%)
+                            <span class="text-orange-400">— bot berhenti jika tercapai</span>
+                        </label>
+                        <input type="number" step="0.5" wire:model="maxDailyLossPercent"
+                               class="w-full border border-orange-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-orange-50
+                                      focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-transparent">
+                        @error('maxDailyLossPercent') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                </div>
+
+                {{-- Trailing Stop Loss --}}
+                <div class="mt-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-xs font-semibold text-slate-700">Trailing Stop Loss</p>
+                            <p class="text-[11px] text-slate-400 mt-0.5">SL otomatis naik mengikuti harga, mengunci profit saat posisi untung.</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer ml-4 shrink-0">
+                            <input type="checkbox" wire:model="trailingSlEnabled" class="sr-only peer">
+                            <div class="w-9 h-5 bg-slate-200 peer-focus:ring-2 peer-focus:ring-blue-300 rounded-full peer
+                                        peer-checked:after:translate-x-full peer-checked:bg-blue-600
+                                        after:content-[''] after:absolute after:top-0.5 after:left-0.5
+                                        after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+                        </label>
+                    </div>
+                    @if($trailingSlEnabled)
+                    <div class="mt-3">
+                        <label class="block text-[10px] text-slate-400 mb-1">Trailing Distance (%) <span class="text-blue-400">(rec: 1.5%)</span></label>
+                        <input type="number" step="0.1" wire:model="trailingSlPercent"
+                               class="w-40 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-[10px] text-slate-400 mt-1">SL akan bergerak ke <strong>peak_price × (1 - {{ $trailingSlPercent }}%)</strong> saat harga naik.</p>
+                        @error('trailingSlPercent') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                    @endif
+                </div>
+
+                {{-- Cooldown + Volume --}}
+                <div class="grid grid-cols-2 gap-3 mt-3">
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            Cooldown setelah SL (candle)
+                            <span class="text-blue-400">— rec: 3</span>
+                        </label>
+                        <input type="number" wire:model="cooldownCandles"
+                               class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-[10px] text-slate-400 mt-1">0 = tidak ada cooldown</p>
+                        @error('cooldownCandles') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            Min Volume Ratio
+                            <span class="text-blue-400">— rec: 1.2</span>
+                        </label>
+                        <input type="number" step="0.1" wire:model="volumeMinRatio"
+                               class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-[10px] text-slate-400 mt-1">Volume candle / rata-rata 20 candle. 1.2 = 20% di atas rata-rata.</p>
+                        @error('volumeMinRatio') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                </div>
+            </div>
+
+            {{-- Strategy --}}
+            <div>
+                <label class="block text-xs font-semibold text-slate-600 mb-2">Strategi Trading</label>
+                <div class="grid grid-cols-1 gap-2">
+                    @foreach(\App\Models\BotSetting::STRATEGIES as $value => $label)
+                        @php
+                            $descriptions = [
+                                'ema_crossover'      => 'EMA20 cross EMA50 + RSI filter. Bagus untuk trending market.',
+                                'rsi_mean_reversion' => 'Beli saat oversold (RSI<35) di lower BB, jual saat overbought. Win rate tinggi di sideways market.',
+                                'bb_squeeze'         => 'Deteksi breakout setelah BB menyempit. Cocok untuk volatilitas rendah yang akan meledak.',
+                            ];
+                        @endphp
+                        <label class="flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition
+                            {{ $strategy === $value
+                                ? 'border-blue-500 bg-blue-50'
+                                : 'border-slate-200 bg-white hover:border-slate-300' }}">
+                            <input type="radio" wire:model="strategy" value="{{ $value }}"
+                                   class="mt-0.5 accent-blue-600 shrink-0">
+                            <div>
+                                <p class="text-sm font-semibold {{ $strategy === $value ? 'text-blue-700' : 'text-slate-800' }}">
+                                    {{ $label }}
+                                </p>
+                                <p class="text-[11px] text-slate-400 mt-0.5">{{ $descriptions[$value] }}</p>
+                            </div>
+                        </label>
+                    @endforeach
                 </div>
             </div>
 
             {{-- Indicators --}}
             <div>
-                <label class="block text-xs font-semibold text-slate-600 mb-2">Indikator Teknikal</label>
-                <div class="grid grid-cols-4 gap-3">
+                <div class="flex items-center justify-between mb-2">
+                    <label class="text-xs font-semibold text-slate-600">Indikator Teknikal</label>
+                    <button type="button" wire:click="applyRecommended"
+                            class="text-[11px] font-semibold text-blue-600 hover:text-blue-700 underline underline-offset-2">
+                        Terapkan Rekomendasi
+                    </button>
+                </div>
+                <div class="grid grid-cols-3 gap-3">
+
+                    {{-- EMA: hanya untuk ema_crossover --}}
+                    @if($strategy === 'ema_crossover')
                     <div>
-                        <label class="block text-[10px] text-slate-400 mb-1">EMA Fast</label>
+                        <label class="block text-[10px] text-slate-400 mb-1">EMA Fast <span class="text-blue-400">(rec: 20)</span></label>
                         <input type="number" wire:model="emaFast"
                                class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
                                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         @error('emaFast') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
                     </div>
                     <div>
-                        <label class="block text-[10px] text-slate-400 mb-1">EMA Slow</label>
+                        <label class="block text-[10px] text-slate-400 mb-1">EMA Slow <span class="text-blue-400">(rec: 50)</span></label>
                         <input type="number" wire:model="emaSlow"
                                class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
                                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         @error('emaSlow') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
                     </div>
+                    @endif
+
+                    {{-- BB Period: untuk rsi_mean_reversion dan bb_squeeze --}}
+                    @if(in_array($strategy, ['rsi_mean_reversion', 'bb_squeeze']))
                     <div>
-                        <label class="block text-[10px] text-slate-400 mb-1">RSI Period</label>
+                        <label class="block text-[10px] text-slate-400 mb-1">BB Period <span class="text-blue-400">(rec: 20)</span></label>
+                        <input type="number" wire:model="bbPeriod"
+                               class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        @error('bbPeriod') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                    @endif
+
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">RSI Period <span class="text-blue-400">(rec: 14)</span></label>
                         <input type="number" wire:model="rsiPeriod"
                                class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
                                       focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
                         @error('rsiPeriod') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
                     </div>
                     <div>
-                        <label class="block text-[10px] text-slate-400 mb-1">Interval</label>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            Interval
+                            @if($strategy === 'ema_crossover') <span class="text-blue-400">(rec: 15m)</span>
+                            @elseif($strategy === 'rsi_mean_reversion') <span class="text-blue-400">(rec: 15m)</span>
+                            @else <span class="text-blue-400">(rec: 1h)</span>
+                            @endif
+                        </label>
                         <select wire:model="klineInterval"
                                 class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
                                        focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
@@ -374,23 +494,41 @@
             @if(!empty($indodaxBalances))
                 <div class="mb-4 grid grid-cols-2 sm:grid-cols-3 gap-3">
                     @foreach($indodaxBalances as $currency => $amount)
-                        @if((float)$amount > 0)
-                        <div class="bg-slate-50 rounded-xl px-4 py-3 flex items-center justify-between">
-                            <span class="text-xs font-semibold text-slate-600 uppercase">{{ $currency }}</span>
-                            <span class="text-sm font-bold text-slate-800">
-                                @if(strtolower($currency) === 'idr')
-                                    Rp {{ number_format($amount, 0, ',', '.') }}
-                                @else
-                                    {{ number_format($amount, 8, '.', '') + 0 }}
-                                @endif
-                            </span>
+                        @php
+                            $amt    = (float) $amount;
+                            $locked = (float) ($bot->balances->where('currency', strtoupper($currency))->first()?->locked ?? 0);
+                        @endphp
+                        @if($amt > 0 || $locked > 0)
+                        <div class="bg-slate-50 rounded-xl px-4 py-3">
+                            <div class="flex items-center justify-between">
+                                <span class="text-xs font-semibold text-slate-600 uppercase">{{ $currency }}</span>
+                                <span class="text-sm font-bold text-slate-800">
+                                    @if(strtolower($currency) === 'idr')
+                                        Rp {{ number_format($amt, 0, ',', '.') }}
+                                    @else
+                                        {{ number_format($amt, 8, '.', '') + 0 }}
+                                    @endif
+                                </span>
+                            </div>
+                            @if($locked > 0)
+                                <div class="flex items-center justify-between mt-1">
+                                    <span class="text-[10px] text-orange-400">hold</span>
+                                    <span class="text-[11px] font-semibold text-orange-500">
+                                        @if(strtolower($currency) === 'idr')
+                                            Rp {{ number_format($locked, 0, ',', '.') }}
+                                        @else
+                                            {{ number_format($locked, 8, '.', '') + 0 }}
+                                        @endif
+                                    </span>
+                                </div>
+                            @endif
                         </div>
                         @endif
                     @endforeach
                 </div>
             @endif
 
-            <div class="flex items-center gap-3">
+            <div class="flex flex-wrap items-center gap-3">
                 <button wire:click="syncBalanceFromIndodax" wire:loading.attr="disabled"
                         class="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60
                                text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition">
@@ -404,6 +542,24 @@
                     <span wire:loading.remove wire:target="syncBalanceFromIndodax">Ambil Saldo dari Indodax</span>
                     <span wire:loading wire:target="syncBalanceFromIndodax">Mengambil...</span>
                 </button>
+
+                @if(!empty($indodaxBalances))
+                <button wire:click="importHoldingsAsTrades"
+                        wire:loading.attr="disabled"
+                        wire:confirm="Import semua crypto holdings sebagai posisi terbuka? Entry price akan menggunakan harga pasar saat ini."
+                        class="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-60
+                               text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition">
+                    <svg wire:loading.remove wire:target="importHoldingsAsTrades" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                    </svg>
+                    <svg wire:loading wire:target="importHoldingsAsTrades" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
+                    <span wire:loading.remove wire:target="importHoldingsAsTrades">Import sebagai Posisi Terbuka</span>
+                    <span wire:loading wire:target="importHoldingsAsTrades">Mengimport...</span>
+                </button>
+                @endif
 
                 @if($syncSuccess)
                     <span class="text-sm text-emerald-600 font-medium">✓ Saldo berhasil disinkronkan</span>
