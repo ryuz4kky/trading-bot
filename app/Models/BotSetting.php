@@ -26,9 +26,12 @@ class BotSetting extends Model
         'trailing_sl_percent',
         'cooldown_candles',
         'volume_min_ratio',
+        'rsi_buy_threshold',
+        'adx_trend_threshold',
     ];
 
     public const STRATEGIES = [
+        'adaptive'           => 'Adaptive (Auto-detect market regime) ⭐',
         'ema_crossover'      => 'EMA Crossover + RSI (Trend Following)',
         'rsi_mean_reversion' => 'RSI Mean Reversion + Bollinger Bands',
         'bb_squeeze'         => 'Bollinger Bands Squeeze',

@@ -37,6 +37,8 @@ class BotSettings extends Component
     public string $trailingSlPercent    = '1.5';
     public string $cooldownCandles      = '3';
     public string $volumeMinRatio       = '1.2';
+    public string $rsiBuyThreshold      = '35';
+    public string $adxTrendThreshold    = '25';
 
     // API key form
     public bool   $showApiForm  = false;
@@ -83,6 +85,8 @@ class BotSettings extends Component
             $this->trailingSlPercent    = (string) (float) ($s->trailing_sl_percent ?? 1.5);
             $this->cooldownCandles      = (string) ($s->cooldown_candles ?? 3);
             $this->volumeMinRatio       = (string) (float) ($s->volume_min_ratio ?? 1.2);
+            $this->rsiBuyThreshold      = (string) ($s->rsi_buy_threshold ?? 35);
+            $this->adxTrendThreshold    = (string) ($s->adx_trend_threshold ?? 25);
         }
     }
 
@@ -93,12 +97,14 @@ class BotSettings extends Component
         $this->validate([
             'botName'            => 'required|string|max:100',
             'mode'               => 'required|in:simulation,real',
-            'strategy'           => 'required|in:ema_crossover,rsi_mean_reversion,bb_squeeze',
+            'strategy'           => 'required|in:adaptive,ema_crossover,rsi_mean_reversion,bb_squeeze',
             'bbPeriod'              => 'required|integer|min:5|max:50',
             'maxDailyLossPercent'   => 'required|numeric|min:1|max:50',
             'trailingSlPercent'     => 'required_if:trailingSlEnabled,true|numeric|min:0.1|max:10',
             'cooldownCandles'       => 'required|integer|min:0|max:20',
             'volumeMinRatio'        => 'required|numeric|min:0.5|max:5',
+            'rsiBuyThreshold'       => 'required|integer|min:20|max:50',
+            'adxTrendThreshold'     => 'required|integer|min:15|max:40',
             'riskPercent'        => 'required|numeric|min:0.1|max:10',
             'stopLossPercent'    => 'required|numeric|min:0.1|max:20',
             'takeProfitPercent'  => 'required|numeric|min:0.1|max:50',
@@ -144,6 +150,8 @@ class BotSettings extends Component
                 'trailing_sl_percent'     => (float) $this->trailingSlPercent,
                 'cooldown_candles'        => (int) $this->cooldownCandles,
                 'volume_min_ratio'        => (float) $this->volumeMinRatio,
+                'rsi_buy_threshold'       => (int) $this->rsiBuyThreshold,
+                'adx_trend_threshold'     => (int) $this->adxTrendThreshold,
             ]
         );
 
@@ -155,7 +163,8 @@ class BotSettings extends Component
     public function applyRecommended(): void
     {
         match ($this->strategy) {
-            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 3, tp: 6),
+            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.5, tp: 5, rsiBuy: 38, adx: 25),
+            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.5, tp: 5, rsiBuy: 38),
             'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 4, tp: 8),
             default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 3, tp: 6),
         };
@@ -169,6 +178,8 @@ class BotSettings extends Component
         string $interval = '15m',
         float  $sl       = 3,
         float  $tp       = 6,
+        int    $rsiBuy   = 35,
+        int    $adx      = 25,
     ): void {
         $this->emaFast           = (string) $emaFast;
         $this->emaSlow           = (string) $emaSlow;
@@ -177,6 +188,8 @@ class BotSettings extends Component
         $this->klineInterval     = $interval;
         $this->stopLossPercent   = (string) $sl;
         $this->takeProfitPercent = (string) $tp;
+        $this->rsiBuyThreshold   = (string) $rsiBuy;
+        $this->adxTrendThreshold = (string) $adx;
     }
 
     public function selectAllPairs(): void

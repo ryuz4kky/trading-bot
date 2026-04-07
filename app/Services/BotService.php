@@ -135,14 +135,34 @@ class BotService
 
         $signal = $this->strategy->analyze(
             $indicators,
-            $bot->settings?->strategy ?? 'ema_crossover',
-            (float) ($bot->settings?->volume_min_ratio ?? 1.2)
+            $bot->settings?->strategy        ?? 'ema_crossover',
+            (float) ($bot->settings?->volume_min_ratio   ?? 1.2),
+            (int)   ($bot->settings?->rsi_buy_threshold  ?? 35),
+            (int)   ($bot->settings?->adx_trend_threshold ?? 25)
         );
+
+        // Deteksi regime untuk adaptive (info saja)
+        $regime = null;
+        if (($bot->settings?->strategy ?? '') === 'adaptive') {
+            $adx       = $indicators['adx'] ?? 0;
+            $spread    = $indicators['ema_spread_pct'] ?? 0;
+            $bbUpper   = $indicators['bb_upper'] ?? 0;
+            $bbLower   = $indicators['bb_lower'] ?? 0;
+            $bbMiddle  = $indicators['bb_middle'] ?? 0;
+            $bandwidth = $bbMiddle > 0 ? (($bbUpper - $bbLower) / $bbMiddle) * 100 : 0;
+
+            $regime = match (true) {
+                $adx >= 25 && $spread >= 0.15 => 'trending→EMA',
+                $adx < 20 && $bandwidth < 3.0 => 'squeeze→BB',
+                default                        => 'sideways→RSI',
+            };
+        }
 
         return array_merge($base, [
             'signal'     => $signal,
             'indicators' => $indicators,
             'idr_price'  => $idrPrice,
+            'regime'     => $regime,
         ]);
     }
 
@@ -181,9 +201,25 @@ class BotService
             if ($this->isInCooldown($bot, $binancePair)) {
                 return;
             }
+            if ($scan['regime']) {
+                $this->log($bot, 'info', "[Adaptive] {$binancePair} regime: {$scan['regime']}");
+            }
             $this->executeBuy($bot, $binancePair, $scan['indodax_pair'], $idrPrice, $scan['indicators']);
         } elseif ($signal === 'sell' && $openTrade) {
-            $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
+            $strategy = $bot->settings?->strategy ?? 'ema_crossover';
+
+            // Mean reversion: signal sell aktif karena exit di BB adalah inti strategi
+            // Tapi hanya kalau posisi sedang profit — tidak boleh jual rugi karena sinyal
+            if ($strategy === 'rsi_mean_reversion' && $idrPrice > (float) $openTrade->entry_price) {
+                $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
+            }
+
+            // BB Squeeze: sama seperti mean reversion — exit saat harga sentuh upper BB
+            if ($strategy === 'bb_squeeze' && $idrPrice > (float) $openTrade->entry_price) {
+                $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
+            }
+
+            // EMA Crossover (trend following): tidak pakai signal sell, biarkan SL/TP
         }
     }
 
@@ -422,7 +458,7 @@ class BotService
                 (float) $bot->settings->stop_loss_percent,
                 (float) $bot->settings->take_profit_percent,
                 (float) $trade->stop_loss_price,
-                (float) $trade->take_profit_price,
+                (float) $trade->take_profit_price
             );
 
             if ($reason) {

@@ -250,6 +250,28 @@
                         <p class="text-[10px] text-slate-400 mt-1">Volume candle / rata-rata 20 candle. 1.2 = 20% di atas rata-rata.</p>
                         @error('volumeMinRatio') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
                     </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            RSI Buy Threshold
+                            <span class="text-blue-400">— rec adaptive: 38</span>
+                        </label>
+                        <input type="number" wire:model="rsiBuyThreshold"
+                               class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-[10px] text-slate-400 mt-1">BUY saat RSI di bawah nilai ini. Lebih tinggi = lebih banyak sinyal.</p>
+                        @error('rsiBuyThreshold') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
+                    <div>
+                        <label class="block text-[10px] text-slate-400 mb-1">
+                            ADX Trend Threshold
+                            <span class="text-blue-400">— rec: 25</span>
+                        </label>
+                        <input type="number" wire:model="adxTrendThreshold"
+                               class="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 bg-white
+                                      focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <p class="text-[10px] text-slate-400 mt-1">ADX ≥ nilai ini = trending market. Dipakai adaptive untuk pilih strategi.</p>
+                        @error('adxTrendThreshold') <p class="mt-1 text-[10px] text-red-500">{{ $message }}</p> @enderror
+                    </div>
                 </div>
             </div>
 
@@ -260,6 +282,7 @@
                     @foreach(\App\Models\BotSetting::STRATEGIES as $value => $label)
                         @php
                             $descriptions = [
+                                'adaptive'           => 'Auto-detect per pair: trending→EMA Crossover | sideways→RSI Mean Reversion | squeeze→BB Squeeze.',
                                 'ema_crossover'      => 'EMA20 cross EMA50 + RSI filter. Bagus untuk trending market.',
                                 'rsi_mean_reversion' => 'Beli saat oversold (RSI<35) di lower BB, jual saat overbought. Win rate tinggi di sideways market.',
                                 'bb_squeeze'         => 'Deteksi breakout setelah BB menyempit. Cocok untuk volatilitas rendah yang akan meledak.',
@@ -293,8 +316,8 @@
                 </div>
                 <div class="grid grid-cols-3 gap-3">
 
-                    {{-- EMA: hanya untuk ema_crossover --}}
-                    @if($strategy === 'ema_crossover')
+                    {{-- EMA: untuk ema_crossover dan adaptive --}}
+                    @if($strategy === 'ema_crossover' || $strategy === 'adaptive')
                     <div>
                         <label class="block text-[10px] text-slate-400 mb-1">EMA Fast <span class="text-blue-400">(rec: 20)</span></label>
                         <input type="number" wire:model="emaFast"
@@ -312,7 +335,7 @@
                     @endif
 
                     {{-- BB Period: untuk rsi_mean_reversion dan bb_squeeze --}}
-                    @if(in_array($strategy, ['rsi_mean_reversion', 'bb_squeeze']))
+                    @if(in_array($strategy, ['rsi_mean_reversion', 'bb_squeeze', 'adaptive']))
                     <div>
                         <label class="block text-[10px] text-slate-400 mb-1">BB Period <span class="text-blue-400">(rec: 20)</span></label>
                         <input type="number" wire:model="bbPeriod"

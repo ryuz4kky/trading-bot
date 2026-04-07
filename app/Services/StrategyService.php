@@ -11,17 +11,59 @@ class StrategyService
      * Analyze indicators and return signal: 'buy', 'sell', or 'hold'.
      * Strategy dipilih berdasarkan setting bot.
      */
-    public function analyze(array $indicators, string $strategy = 'ema_crossover', float $volumeMinRatio = 1.2): string
-    {
+    public function analyze(
+        array  $indicators,
+        string $strategy         = 'ema_crossover',
+        float  $volumeMinRatio   = 1.2,
+        int    $rsiBuyThreshold  = 35,
+        int    $adxTrendThreshold = 25
+    ): string {
         if (! ($indicators['valid'] ?? false)) {
             return 'hold';
         }
 
+        if ($strategy === 'adaptive') {
+            return $this->adaptive($indicators, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
+        }
+
         return match ($strategy) {
-            'rsi_mean_reversion' => $this->rsiMeanReversion($indicators, $volumeMinRatio),
+            'rsi_mean_reversion' => $this->rsiMeanReversion($indicators, $volumeMinRatio, $rsiBuyThreshold),
             'bb_squeeze'         => $this->bbSqueeze($indicators, $volumeMinRatio),
-            default              => $this->emaCrossover($indicators, $volumeMinRatio),
+            default              => $this->emaCrossover($indicators, $volumeMinRatio, $rsiBuyThreshold),
         };
+    }
+
+    /**
+     * Deteksi regime market per pair lalu pilih strategi yang sesuai.
+     *
+     * ADX ≥ 25 + EMA spread lebar  → trending    → EMA Crossover
+     * ADX < 20 + BB bandwidth sempit → squeeze    → BB Squeeze
+     * ADX < 20                       → sideways   → RSI Mean Reversion
+     * Di antara (20-25)              → ambiguous  → RSI Mean Reversion (lebih aman)
+     */
+    private function adaptive(array $ind, float $volumeMinRatio, int $rsiBuyThreshold, int $adxTrendThreshold): string
+    {
+        $adx          = $ind['adx']           ?? 0.0;
+        $emaSpreadPct = $ind['ema_spread_pct'] ?? 0.0;
+        $bbUpper      = $ind['bb_upper']       ?? 0.0;
+        $bbLower      = $ind['bb_lower']       ?? 0.0;
+        $bbMiddle     = $ind['bb_middle']      ?? 0.0;
+
+        $bandwidth   = ($bbMiddle > 0) ? (($bbUpper - $bbLower) / $bbMiddle) * 100 : 0;
+        $adxSideways = max(15, $adxTrendThreshold - 5);
+
+        // Trending: ADX kuat + EMA spread cukup besar
+        if ($adx >= $adxTrendThreshold && $emaSpreadPct >= self::EMA_SPREAD_MIN) {
+            return $this->emaCrossover($ind, $volumeMinRatio, $rsiBuyThreshold);
+        }
+
+        // Squeeze forming: market konsolidasi sempit, siap breakout
+        if ($adx < $adxSideways && $bandwidth < 3.0) {
+            return $this->bbSqueeze($ind, $volumeMinRatio);
+        }
+
+        // Sideways / ambiguous: mean reversion paling aman
+        return $this->rsiMeanReversion($ind, $volumeMinRatio, $rsiBuyThreshold);
     }
 
     // ─── Strategi 1: EMA Crossover + RSI (default) ───────────────────────────
@@ -29,7 +71,7 @@ class StrategyService
     // BUY : ADX tinggi + EMA20 > EMA50 + harga > EMA50 + RSI 35-60 + bullish candle
     // SELL: EMA20 < EMA50 + harga < EMA50 + RSI > 65
 
-    private function emaCrossover(array $ind, float $volumeMinRatio): string
+    private function emaCrossover(array $ind, float $volumeMinRatio, int $rsiBuyThreshold = 35): string
     {
         $price        = $ind['current_price'];
         $emaFast      = $ind['ema_fast'];
@@ -47,7 +89,7 @@ class StrategyService
         $isTrending = ($adx >= self::ADX_TREND_MIN) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
 
         if ($isTrending && $price > $emaSlow && $emaFast > $emaSlow
-            && $rsi >= 35 && $rsi <= 60 && $isBullish
+            && $rsi >= $rsiBuyThreshold && $rsi <= 60 && $isBullish
             && $volumeRatio >= $volumeMinRatio
         ) {
             return 'buy';
@@ -66,7 +108,7 @@ class StrategyService
     // BUY : RSI < 35 + harga di bawah/dekat lower BB + bullish candle
     // SELL: RSI > 65 + harga di atas/dekat upper BB
 
-    private function rsiMeanReversion(array $ind, float $volumeMinRatio): string
+    private function rsiMeanReversion(array $ind, float $volumeMinRatio, int $rsiBuyThreshold = 35): string
     {
         $price       = $ind['current_price'];
         $rsi         = $ind['rsi'];
@@ -81,7 +123,7 @@ class StrategyService
         }
 
         // BUY: oversold + harga menyentuh/melewati lower band + reversal + volume konfirmasi
-        if ($rsi < 35 && $price <= $bbLower * 1.01 && $isBullish && $volumeRatio >= $volumeMinRatio) {
+        if ($rsi < $rsiBuyThreshold && $price <= $bbLower * 1.01 && $isBullish && $volumeRatio >= $volumeMinRatio) {
             return 'buy';
         }
 
