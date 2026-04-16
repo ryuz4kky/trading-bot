@@ -231,7 +231,16 @@ class IndicatorService
 
         $lastCandle   = end($klines);
         $currentPrice = (float) $lastCandle[4];
-        $isBullish    = (float) $lastCandle[4] > (float) $lastCandle[1];
+
+        // Bullish candle: close > open DAN body setidaknya 30% dari total range candle
+        // Mencegah doji (body sangat kecil) dianggap bullish — sinyal yang tidak bermakna
+        $candleOpen  = (float) $lastCandle[1];
+        $candleHigh  = (float) $lastCandle[2];
+        $candleLow   = (float) $lastCandle[3];
+        $candleRange = $candleHigh - $candleLow;
+        $candleBody  = abs($currentPrice - $candleOpen);
+        $isBullish   = $currentPrice > $candleOpen
+            && ($candleRange <= 0 || ($candleBody / $candleRange) >= 0.30);
 
         $emaFastVal = $this->calculateEMA($closes, $emaFast);
         $emaSlowVal = $this->calculateEMA($closes, $emaSlow);
@@ -242,11 +251,16 @@ class IndicatorService
 
         $bb = $this->calculateBollingerBands($closes, $bbPeriod);
 
-        // Volume ratio: volume candle terakhir / rata-rata 20 candle
-        $volumes     = array_map(fn($k) => (float) $k[5], $klines);
-        $volSlice    = array_slice($volumes, -20);
+        // Volume ratio: volume candle terakhir dibanding rata-rata 20 candle SEBELUMNYA
+        // Candle terakhir dikecualikan dari rata-rata agar tidak inflasi diri sendiri
+        $volumes    = array_map(fn($k) => (float) $k[5], $klines);
+        $lastVolume = end($volumes);
+        $volCount   = count($volumes);
+        // Ambil 20 candle sebelum candle terakhir
+        $volSlice   = $volCount >= 21
+            ? array_slice($volumes, -21, 20)
+            : array_slice($volumes, 0, $volCount - 1);
         $avgVolume   = count($volSlice) > 0 ? array_sum($volSlice) / count($volSlice) : 0;
-        $lastVolume  = end($volumes);
         $volumeRatio = $avgVolume > 0 ? round($lastVolume / $avgVolume, 2) : 1.0;
 
         return [

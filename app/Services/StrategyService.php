@@ -29,7 +29,7 @@ class StrategyService
         return match ($strategy) {
             'rsi_mean_reversion' => $this->rsiMeanReversion($indicators, $volumeMinRatio, $rsiBuyThreshold),
             'bb_squeeze'         => $this->bbSqueeze($indicators, $volumeMinRatio),
-            default              => $this->emaCrossover($indicators, $volumeMinRatio, $rsiBuyThreshold),
+            default              => $this->emaCrossover($indicators, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold),
         };
     }
 
@@ -54,7 +54,7 @@ class StrategyService
 
         // Trending: ADX kuat + EMA spread cukup besar
         if ($adx >= $adxTrendThreshold && $emaSpreadPct >= self::EMA_SPREAD_MIN) {
-            return $this->emaCrossover($ind, $volumeMinRatio, $rsiBuyThreshold);
+            return $this->emaCrossover($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
         }
 
         // Squeeze forming: market konsolidasi sempit, siap breakout
@@ -71,7 +71,7 @@ class StrategyService
     // BUY : ADX tinggi + EMA20 > EMA50 + harga > EMA50 + RSI 35-60 + bullish candle
     // SELL: EMA20 < EMA50 + harga < EMA50 + RSI > 65
 
-    private function emaCrossover(array $ind, float $volumeMinRatio, int $rsiBuyThreshold = 35): string
+    private function emaCrossover(array $ind, float $volumeMinRatio, int $rsiBuyThreshold = 35, int $adxTrendThreshold = 25): string
     {
         $price        = $ind['current_price'];
         $emaFast      = $ind['ema_fast'];
@@ -86,16 +86,19 @@ class StrategyService
             return 'hold';
         }
 
-        $isTrending = ($adx >= self::ADX_TREND_MIN) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
+        // Gunakan threshold dari settings user, bukan konstanta global
+        $isTrending = ($adx >= $adxTrendThreshold) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
 
         if ($isTrending && $price > $emaSlow && $emaFast > $emaSlow
-            && $rsi >= $rsiBuyThreshold && $rsi <= 60 && $isBullish
+            && $rsi >= $rsiBuyThreshold && $rsi <= 58 && $isBullish
             && $volumeRatio >= $volumeMinRatio
         ) {
             return 'buy';
         }
 
-        if ($price < $emaSlow && $emaFast < $emaSlow && $rsi > 65) {
+        // EMA crossover sell via sinyal tidak digunakan (biarkan SL/TP)
+        // Menghindari exit terlalu dini di tengah trend
+        if ($price < $emaSlow && $emaFast < $emaSlow && $rsi > 70) {
             return 'sell';
         }
 
@@ -122,14 +125,16 @@ class StrategyService
             return 'hold';
         }
 
-        // BUY: oversold + harga menyentuh/melewati lower band + reversal + volume konfirmasi
-        if ($rsi < $rsiBuyThreshold && $price <= $bbLower * 1.01 && $isBullish && $volumeRatio >= $volumeMinRatio) {
+        // BUY: oversold + harga dekat/di bawah lower band + reversal + volume konfirmasi
+        // Syarat ketat: RSI harus benar-benar oversold (bukan sekadar rendah)
+        if ($rsi < $rsiBuyThreshold && $price <= $bbLower * 1.005 && $isBullish && $volumeRatio >= $volumeMinRatio) {
             return 'buy';
         }
 
-        // SELL: overbought + harga menyentuh upper band
-        // ATAU harga kembali ke middle band setelah buy dari bawah
-        if (($rsi > 65 && $price >= $bbUpper * 0.99) || ($rsi > 55 && $price >= $bbMiddle)) {
+        // SELL via sinyal: hanya di upper BB yang jelas (99% dari upper)
+        // Middle band sell dihapus — terlalu dini, makan fee tanpa profit memadai
+        // Exit via TP/SL yang dihandle BotService lebih reliable
+        if ($rsi > 68 && $price >= $bbUpper * 0.99) {
             return 'sell';
         }
 

@@ -54,11 +54,13 @@ class Dashboard extends Component
 
         $this->todayProfit = (float) Trade::where('bot_id', $this->bot->id)
             ->where('status', 'closed')
+            ->where('mode', $this->bot->mode)
             ->whereDate('closed_at', today())
             ->sum('profit_loss');
 
         $this->openTrades = Trade::where('bot_id', $this->bot->id)
             ->where('status', 'open')
+            ->where('mode', $this->bot->mode)
             ->orderByDesc('created_at')
             ->get()
             ->toArray();
@@ -66,6 +68,7 @@ class Dashboard extends Component
 
         $this->recentTrades = Trade::where('bot_id', $this->bot->id)
             ->where('status', 'closed')
+            ->where('mode', $this->bot->mode)
             ->orderByDesc('closed_at')
             ->limit(20)
             ->get()

@@ -72,14 +72,15 @@ class BotService
 
         $freeIdr = $this->getAvailableIdr($bot);
 
-        // Nilai modal yang sedang "dipakai" di posisi terbuka
+        // Nilai modal yang sedang "dipakai" di posisi terbuka (filter mode agar sim/real tidak campur)
         $lockedIdr = (float) Trade::where('bot_id', $bot->id)
             ->where('status', 'open')
+            ->where('mode', $bot->mode)
             ->sum('amount_idr');
 
         $totalCapital    = $freeIdr + $lockedIdr;
         $perPositionAlloc = $maxPositions > 0 ? $totalCapital / $maxPositions : $totalCapital;
-        $openCount        = Trade::where('bot_id', $bot->id)->where('status', 'open')->count();
+        $openCount        = Trade::where('bot_id', $bot->id)->where('status', 'open')->where('mode', $bot->mode)->count();
         $availableSlots   = max(0, $maxPositions - $openCount);
 
         return [
@@ -208,15 +209,30 @@ class BotService
         } elseif ($signal === 'sell' && $openTrade) {
             $strategy = $bot->settings?->strategy ?? 'ema_crossover';
 
+            // Fee Indodax: 0.3% per sisi = 0.6% round trip
+            // Signal sell hanya boleh dilakukan kalau profit bersih > fee + buffer (min 1.2%)
+            $entryPrice     = (float) $openTrade->entry_price;
+            $profitPct      = $entryPrice > 0 ? (($idrPrice - $entryPrice) / $entryPrice) * 100 : 0;
+            $minProfitToSell = 1.2; // 0.6% fee + 0.6% buffer minimum
+
             // Mean reversion: signal sell aktif karena exit di BB adalah inti strategi
-            // Tapi hanya kalau posisi sedang profit — tidak boleh jual rugi karena sinyal
-            if ($strategy === 'rsi_mean_reversion' && $idrPrice > (float) $openTrade->entry_price) {
+            // Tapi hanya kalau profit sudah cukup untuk menutup biaya admin
+            if ($strategy === 'rsi_mean_reversion' && $profitPct >= $minProfitToSell) {
                 $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
             }
 
-            // BB Squeeze: sama seperti mean reversion — exit saat harga sentuh upper BB
-            if ($strategy === 'bb_squeeze' && $idrPrice > (float) $openTrade->entry_price) {
+            // BB Squeeze: sama seperti mean reversion
+            if ($strategy === 'bb_squeeze' && $profitPct >= $minProfitToSell) {
                 $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
+            }
+
+            // Adaptive: signal sell hanya untuk regime sideways/squeeze (bukan trending)
+            if ($strategy === 'adaptive' && $profitPct >= $minProfitToSell) {
+                $regime = $scan['regime'] ?? '';
+                if (str_contains($regime, 'sideways') || str_contains($regime, 'squeeze')) {
+                    $this->executeSell($bot, $openTrade, $idrPrice, 'signal');
+                }
+                // trending→EMA regime: biarkan SL/TP yang menangani
             }
 
             // EMA Crossover (trend following): tidak pakai signal sell, biarkan SL/TP
@@ -264,26 +280,26 @@ class BotService
         $slPct    = (float) ($settings->stop_loss_percent ?? 3);
         $tpPct    = (float) ($settings->take_profit_percent ?? 5);
 
-        // Hybrid SL/TP: ATR sebagai referensi, dibatasi setting user
+        // SL/TP berdasarkan persentase setting (lebih predictable untuk R:R)
+        // ATR hanya digunakan untuk SL agar lebih adaptif terhadap volatilitas,
+        // TP tetap berbasis persentase agar tidak terlalu kecil di kondisi volatilitas rendah
         $atr = (float) ($indicators['atr'] ?? 0);
         if ($atr > 0 && ($indicators['current_price'] ?? 0) > 0) {
             $usdtToIdr = $idrPrice / $indicators['current_price'];
             $atrIdr    = $atr * $usdtToIdr;
 
             $slByAtr = $idrPrice - ($atrIdr * 1.5);  // ATR × 1.5
-            $tpByAtr = $idrPrice + ($atrIdr * 2.5);  // ATR × 2.5
-
             $slByPct = $idrPrice * (1 - $slPct / 100);
-            $tpByPct = $idrPrice * (1 + $tpPct / 100);
 
-            // Ambil SL yang lebih ketat (harga lebih tinggi = lebih aman)
+            // SL: ambil yang lebih ketat (harga lebih tinggi = loss lebih kecil)
             $slPrice = max($slByAtr, $slByPct);
-            // Ambil TP yang lebih konservatif (harga lebih rendah = lebih realistis)
-            $tpPrice = min($tpByAtr, $tpByPct);
         } else {
             $slPrice = $idrPrice * (1 - $slPct / 100);
-            $tpPrice = $idrPrice * (1 + $tpPct / 100);
         }
+
+        // TP selalu berbasis persentase — tidak dibatasi ATR
+        // Ini memastikan minimum profit cukup besar untuk menutup biaya admin (fee 0.6%)
+        $tpPrice = $idrPrice * (1 + $tpPct / 100);
 
         $exchangeOrderId = null;
 
@@ -412,7 +428,7 @@ class BotService
 
     public function monitorPositions(Bot $bot): void
     {
-        $openTrades = Trade::where('bot_id', $bot->id)->where('status', 'open')->get();
+        $openTrades = Trade::where('bot_id', $bot->id)->where('status', 'open')->where('mode', $bot->mode)->get();
 
         if ($openTrades->isEmpty()) {
             return;
@@ -559,6 +575,7 @@ class BotService
         $lastSl = Trade::where('bot_id', $bot->id)
             ->where('binance_pair', $binancePair)
             ->where('status', 'closed')
+            ->where('mode', $bot->mode)
             ->where('close_reason', 'stop_loss')
             ->orderByDesc('closed_at')
             ->first();
@@ -617,6 +634,7 @@ class BotService
 
         $todayLoss = (float) Trade::where('bot_id', $bot->id)
             ->where('status', 'closed')
+            ->where('mode', $bot->mode)
             ->whereDate('closed_at', today())
             ->where('profit_loss', '<', 0)
             ->sum('profit_loss');

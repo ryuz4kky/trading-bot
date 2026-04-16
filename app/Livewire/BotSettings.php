@@ -162,11 +162,13 @@ class BotSettings extends Component
 
     public function applyRecommended(): void
     {
+        // R:R minimum 1:2.5 setelah fee Indodax 0.6% round trip
+        // SL kecil + TP besar = win rate 35-40% sudah cukup profitable
         match ($this->strategy) {
-            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.5, tp: 5, rsiBuy: 38, adx: 25),
-            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.5, tp: 5, rsiBuy: 38),
-            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 4, tp: 8),
-            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 3, tp: 6),
+            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.0, tp: 5.0, rsiBuy: 38, adx: 25),
+            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.0, tp: 5.0, rsiBuy: 35, adx: 25),
+            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 3.0, tp: 7.5, rsiBuy: 35, adx: 25),
+            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 2.0, tp: 5.0, rsiBuy: 38, adx: 25),
         };
     }
 
