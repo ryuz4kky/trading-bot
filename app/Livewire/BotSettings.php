@@ -298,7 +298,6 @@ class BotSettings extends Component
             }
 
             // Hapus hold di DB untuk currency yang tidak ada di balance_hold Indodax
-            // (samakan dengan kondisi real exchange)
             Balance::where('bot_id', $this->bot->id)
                 ->where('mode', $mode)
                 ->where('locked', '>', 0)
@@ -307,6 +306,20 @@ class BotSettings extends Component
                     $currency = strtolower($b->currency);
                     if (! isset($balanceHold[$currency]) || (float) $balanceHold[$currency] <= 0) {
                         $b->update(['locked' => 0]);
+                    }
+                });
+
+            // Set amount = 0 untuk currency yang sudah tidak ada di Indodax
+            // (supaya tidak ikut di-import sebagai posisi terbuka)
+            Balance::where('bot_id', $this->bot->id)
+                ->where('mode', $mode)
+                ->where('currency', '!=', 'IDR')
+                ->get()
+                ->each(function ($b) use ($balance) {
+                    $currency = strtolower($b->currency);
+                    $indodaxAmount = (float) ($balance[$currency] ?? 0);
+                    if ($indodaxAmount <= 0 && (float) $b->amount > 0) {
+                        $b->update(['amount' => 0, 'locked' => 0]);
                     }
                 });
 
@@ -336,8 +349,14 @@ class BotSettings extends Component
         $settings = $this->bot->settings;
         $binance  = app(BinanceService::class);
 
-        // Reverse map: currency (uppercase) -> binance pair
-        // e.g. BTC -> BTCUSDT
+        // Bangun daftar currency yang dikonfigurasi di pairs bot
+        // e.g. ['BTCUSDT', 'ETHUSDT'] → ['BTC', 'ETH']
+        $configuredPairs    = $settings?->pairs ?? [];
+        $configuredCurrencies = array_map(
+            fn($p) => strtoupper(str_replace('USDT', '', $p)),
+            $configuredPairs
+        );
+
         $holdings = Balance::where('bot_id', $this->bot->id)
             ->where('mode', $mode)
             ->where('currency', '!=', 'IDR')
@@ -351,13 +370,20 @@ class BotSettings extends Component
         $imported     = 0;
         $skipReasons  = [];
 
+        // Nilai minimum dalam IDR agar tidak import dust
+        $minValueIdr = 10000;
+
         foreach ($holdings as $holding) {
             $currency    = strtolower($holding->currency);
             $binancePair = strtoupper($currency) . 'USDT';
             $indodaxPair = $currency . '_idr';
-            // Gunakan total amount — balance_hold Indodax kadang non-zero
-            // meski tidak ada open order (dust hold internal)
-            $available = (float) $holding->amount;
+            $available   = (float) $holding->amount;
+
+            // Hanya import coin yang ada di konfigurasi pairs bot
+            if (! empty($configuredCurrencies) && ! in_array(strtoupper($currency), $configuredCurrencies)) {
+                $skipReasons[] = strtoupper($currency) . ': tidak ada di pairs bot';
+                continue;
+            }
 
             if ($available <= 0) {
                 $skipReasons[] = strtoupper($currency) . ': jumlah 0';
@@ -368,11 +394,17 @@ class BotSettings extends Component
             $entryPrice = $binance->getCurrentIdrPrice($binancePair);
 
             if ($entryPrice <= 0) {
-                $skipReasons[] = strtoupper($currency) . ': harga IDR tidak ditemukan (pair tidak didukung)';
+                $skipReasons[] = strtoupper($currency) . ': harga IDR tidak ditemukan';
                 continue;
             }
 
-            $amountIdr       = $available * $entryPrice;
+            $amountIdr = $available * $entryPrice;
+
+            // Skip dust — nilai terlalu kecil, tidak layak ditrack sebagai posisi
+            if ($amountIdr < $minValueIdr) {
+                $skipReasons[] = strtoupper($currency) . ': nilai terlalu kecil (Rp ' . number_format($amountIdr, 0, ',', '.') . ')';
+                continue;
+            }
             $slPercent       = (float) ($settings?->stop_loss_percent ?? 3);
             $tpPercent       = (float) ($settings?->take_profit_percent ?? 6);
             $stopLossPrice   = $entryPrice * (1 - $slPercent / 100);
