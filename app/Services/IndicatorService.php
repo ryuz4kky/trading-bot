@@ -244,12 +244,24 @@ class IndicatorService
 
         $emaFastVal = $this->calculateEMA($closes, $emaFast);
         $emaSlowVal = $this->calculateEMA($closes, $emaSlow);
+        $prevEmaFast = count($closes) > $emaFast
+            ? $this->calculateEMA(array_slice($closes, 0, -1), $emaFast)
+            : $emaFastVal;
+        $prevEmaSlow = count($closes) > $emaSlow
+            ? $this->calculateEMA(array_slice($closes, 0, -1), $emaSlow)
+            : $emaSlowVal;
 
         $emaSpreadPct = $emaSlowVal > 0
             ? round(abs($emaFastVal - $emaSlowVal) / $emaSlowVal * 100, 4)
             : 0.0;
+        $priceChangePct = count($closes) > 1 && $closes[count($closes) - 2] > 0
+            ? round((($currentPrice - $closes[count($closes) - 2]) / $closes[count($closes) - 2]) * 100, 4)
+            : 0.0;
 
         $bb = $this->calculateBollingerBands($closes, $bbPeriod);
+        $prevBb = count($closes) > $bbPeriod
+            ? $this->calculateBollingerBands(array_slice($closes, 0, -1), $bbPeriod)
+            : $bb;
 
         // Volume ratio: volume candle terakhir dibanding rata-rata 20 candle SEBELUMNYA
         // Candle terakhir dikecualikan dari rata-rata agar tidak inflasi diri sendiri
@@ -262,19 +274,40 @@ class IndicatorService
             : array_slice($volumes, 0, $volCount - 1);
         $avgVolume   = count($volSlice) > 0 ? array_sum($volSlice) / count($volSlice) : 0;
         $volumeRatio = $avgVolume > 0 ? round($lastVolume / $avgVolume, 2) : 1.0;
+        $rsiNow      = $this->calculateRSI($closes, $rsiPeriod);
+        $prevRsi     = count($closes) > $rsiPeriod + 1
+            ? $this->calculateRSI(array_slice($closes, 0, -1), $rsiPeriod)
+            : $rsiNow;
+        $bbRange     = max(0.00000001, $bb['upper'] - $bb['lower']);
+        $bbPosition  = round(($currentPrice - $bb['lower']) / $bbRange, 4);
+        $prevBbMiddle = $prevBb['middle'] ?? 0.0;
+        $prevBandwidth = $prevBbMiddle > 0
+            ? round((($prevBb['upper'] - $prevBb['lower']) / $prevBbMiddle) * 100, 4)
+            : 0.0;
+        $currentBandwidth = ($bb['middle'] ?? 0) > 0
+            ? round((($bb['upper'] - $bb['lower']) / $bb['middle']) * 100, 4)
+            : 0.0;
 
         return [
             'ema_fast'       => $emaFastVal,
             'ema_slow'       => $emaSlowVal,
-            'rsi'            => $this->calculateRSI($closes, $rsiPeriod),
+            'prev_ema_fast'  => $prevEmaFast,
+            'prev_ema_slow'  => $prevEmaSlow,
+            'rsi'            => $rsiNow,
+            'prev_rsi'       => $prevRsi,
             'atr'            => $this->calculateATR($klines),
             'adx'            => $this->calculateADX($klines),
             'ema_spread_pct' => $emaSpreadPct,
             'bb_upper'       => $bb['upper'],
             'bb_middle'      => $bb['middle'],
             'bb_lower'       => $bb['lower'],
+            'bb_position'    => $bbPosition,
+            'bb_bandwidth'   => $currentBandwidth,
+            'prev_bb_bandwidth' => $prevBandwidth,
             'current_price'  => $currentPrice,
+            'price_change_pct' => $priceChangePct,
             'is_bullish'     => $isBullish,
+            'candle_body_ratio' => $candleRange > 0 ? round($candleBody / $candleRange, 4) : 0.0,
             'volume_ratio'   => $volumeRatio,
             'valid'          => true,
         ];

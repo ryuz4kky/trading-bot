@@ -5,7 +5,7 @@ namespace App\Services;
 class StrategyService
 {
     private const ADX_TREND_MIN  = 20.0;
-    private const EMA_SPREAD_MIN = 0.15;
+    private const EMA_SPREAD_MIN = 0.20;
 
     /**
      * Analyze indicators and return signal: 'buy', 'sell', or 'hold'.
@@ -45,11 +45,7 @@ class StrategyService
     {
         $adx          = $ind['adx']           ?? 0.0;
         $emaSpreadPct = $ind['ema_spread_pct'] ?? 0.0;
-        $bbUpper      = $ind['bb_upper']       ?? 0.0;
-        $bbLower      = $ind['bb_lower']       ?? 0.0;
-        $bbMiddle     = $ind['bb_middle']      ?? 0.0;
-
-        $bandwidth   = ($bbMiddle > 0) ? (($bbUpper - $bbLower) / $bbMiddle) * 100 : 0;
+        $bandwidth   = $ind['bb_bandwidth'] ?? 0.0;
         $adxSideways = max(15, $adxTrendThreshold - 5);
 
         // Trending: ADX kuat + EMA spread cukup besar
@@ -57,13 +53,18 @@ class StrategyService
             return $this->emaCrossover($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
         }
 
-        // Squeeze forming: market konsolidasi sempit, siap breakout
-        if ($adx < $adxSideways && $bandwidth < 3.0) {
+        // Squeeze forming: market mulai bertransisi dari sempit ke ekspansi
+        if ($adx >= 18 && $adx < $adxTrendThreshold && $bandwidth >= 2.0) {
             return $this->bbSqueeze($ind, $volumeMinRatio);
         }
 
-        // Sideways / ambiguous: mean reversion paling aman
-        return $this->rsiMeanReversion($ind, $volumeMinRatio, $rsiBuyThreshold);
+        // Sideways murni saja yang boleh mean reversion.
+        if ($adx < $adxSideways && $bandwidth >= 1.6 && $bandwidth <= 5.5) {
+            return $this->rsiMeanReversion($ind, $volumeMinRatio, min($rsiBuyThreshold, 33));
+        }
+
+        // Kondisi ambigu sering menghasilkan chop. Lebih aman skip.
+        return 'hold';
     }
 
     // ─── Strategi 1: EMA Crossover + RSI (default) ───────────────────────────
@@ -81,6 +82,11 @@ class StrategyService
         $adx          = $ind['adx'] ?? 0.0;
         $emaSpreadPct = $ind['ema_spread_pct'] ?? 0.0;
         $volumeRatio  = $ind['volume_ratio'] ?? 1.0;
+        $prevEmaFast  = $ind['prev_ema_fast'] ?? $emaFast;
+        $prevEmaSlow  = $ind['prev_ema_slow'] ?? $emaSlow;
+        $prevRsi      = $ind['prev_rsi'] ?? $rsi;
+        $bodyRatio    = $ind['candle_body_ratio'] ?? 0.0;
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
 
         if ($emaFast <= 0 || $emaSlow <= 0) {
             return 'hold';
@@ -88,10 +94,14 @@ class StrategyService
 
         // Gunakan threshold dari settings user, bukan konstanta global
         $isTrending = ($adx >= $adxTrendThreshold) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
+        $trendStrengthImproving = $emaFast >= $prevEmaFast && $emaSlow >= $prevEmaSlow;
+        $rsiIsHealthy = $rsi >= max($rsiBuyThreshold, 40) && $rsi <= 56 && $rsi >= $prevRsi;
+        $volumeConfirmed = $volumeRatio >= max($volumeMinRatio, 1.35);
 
-        if ($isTrending && $price > $emaSlow && $emaFast > $emaSlow
-            && $rsi >= $rsiBuyThreshold && $rsi <= 58 && $isBullish
-            && $volumeRatio >= $volumeMinRatio
+        if ($isTrending && $price > $emaFast && $price > $emaSlow && $emaFast > $emaSlow
+            && $trendStrengthImproving && $rsiIsHealthy && $isBullish
+            && $bodyRatio >= 0.45 && $priceChangePct <= 1.8
+            && $volumeConfirmed
         ) {
             return 'buy';
         }
@@ -120,6 +130,10 @@ class StrategyService
         $bbMiddle    = $ind['bb_middle'] ?? 0.0;
         $isBullish   = $ind['is_bullish'];
         $volumeRatio = $ind['volume_ratio'] ?? 1.0;
+        $prevRsi     = $ind['prev_rsi'] ?? $rsi;
+        $bbPosition  = $ind['bb_position'] ?? 0.5;
+        $bodyRatio   = $ind['candle_body_ratio'] ?? 0.0;
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
 
         if ($bbLower <= 0 || $bbUpper <= 0) {
             return 'hold';
@@ -127,7 +141,15 @@ class StrategyService
 
         // BUY: oversold + harga dekat/di bawah lower band + reversal + volume konfirmasi
         // Syarat ketat: RSI harus benar-benar oversold (bukan sekadar rendah)
-        if ($rsi < $rsiBuyThreshold && $price <= $bbLower * 1.005 && $isBullish && $volumeRatio >= $volumeMinRatio) {
+        if ($rsi <= min($rsiBuyThreshold, 33)
+            && $prevRsi < $rsi
+            && $price <= $bbLower * 1.003
+            && $bbPosition <= 0.18
+            && $isBullish
+            && $bodyRatio >= 0.35
+            && $priceChangePct <= 1.2
+            && $volumeRatio >= max(1.0, $volumeMinRatio - 0.1)
+        ) {
             return 'buy';
         }
 
@@ -157,19 +179,24 @@ class StrategyService
         $isBullish   = $ind['is_bullish'];
         $adx         = $ind['adx'] ?? 0.0;
         $volumeRatio = $ind['volume_ratio'] ?? 1.0;
+        $bandwidth   = $ind['bb_bandwidth'] ?? 0.0;
+        $prevBandwidth = $ind['prev_bb_bandwidth'] ?? $bandwidth;
+        $bodyRatio   = $ind['candle_body_ratio'] ?? 0.0;
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
 
         if ($bbLower <= 0 || $bbUpper <= 0 || $bbMiddle <= 0) {
             return 'hold';
         }
 
-        // Bandwidth BB sebagai % dari middle (squeeze = nilai kecil)
-        $bandwidth = (($bbUpper - $bbLower) / $bbMiddle) * 100;
-
         // BUY: breakout ke atas middle BB + ADX mulai naik + RSI < 60 + bullish candle
         // Bandwidth > 2% berarti squeeze sudah mulai melebar (breakout terjadi)
         // Volume wajib tinggi saat breakout — squeeze tanpa volume = false breakout
-        if ($bandwidth > 2.0 && $price > $bbMiddle && $adx >= 18
-            && $rsi < 60 && $isBullish && $volumeRatio >= $volumeMinRatio
+        if ($prevBandwidth > 0 && $bandwidth > max(2.0, $prevBandwidth * 1.08)
+            && $price > $bbMiddle && $adx >= 18
+            && $rsi >= 45 && $rsi <= 58
+            && $isBullish && $bodyRatio >= 0.45
+            && $priceChangePct <= 1.8
+            && $volumeRatio >= max($volumeMinRatio, 1.3)
         ) {
             return 'buy';
         }

@@ -200,6 +200,14 @@ class BinanceService
                 return [];
             }
 
+            $closedCandles = array_values(array_filter($raw, function ($k) {
+                return ! isset($k[7]) || (bool) $k[7] === true;
+            }));
+
+            if (empty($closedCandles)) {
+                return [];
+            }
+
             // Gate.io: [ts, quote_vol, close, high, low, open, vol, closed]
             // Binance: [ts_ms, open, high, low, close, volume]
             return array_map(fn($k) => [
@@ -209,7 +217,7 @@ class BinanceService
                 (string) $k[4], // low
                 (string) $k[2], // close
                 (string) $k[6], // volume
-            ], $raw);
+            ], $closedCandles);
 
         } catch (\Throwable $e) {
             Log::warning("BinanceService: Gate.io exception {$gatePair} — {$e->getMessage()}");

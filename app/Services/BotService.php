@@ -60,15 +60,15 @@ class BotService
     /**
      * Snapshot kondisi portofolio saat ini.
      *
-     * Konsep Full Balance System:
-     *   total_capital = free_idr + nilai IDR semua posisi terbuka
-     *   per_position  = total_capital / max_positions
-     *   → setiap trade mendapat alokasi yang sama dari total modal
+     * total_capital = free_idr + nilai IDR semua posisi terbuka.
+     * per_position  = min(total_capital / max_positions, total_capital * risk_percent)
+     * agar mode real tidak memakai porsi modal terlalu besar per entry.
      */
     public function getPortfolioSnapshot(Bot $bot): array
     {
         $settings     = $bot->settings;
         $maxPositions = (int) ($settings?->max_positions ?? 4);
+        $riskPercent  = max(0.1, (float) ($settings?->risk_percent ?? 2));
 
         $freeIdr = $this->getAvailableIdr($bot);
 
@@ -79,7 +79,9 @@ class BotService
             ->sum('amount_idr');
 
         $totalCapital    = $freeIdr + $lockedIdr;
-        $perPositionAlloc = $maxPositions > 0 ? $totalCapital / $maxPositions : $totalCapital;
+        $slotAllocation  = $maxPositions > 0 ? $totalCapital / $maxPositions : $totalCapital;
+        $riskAllocation  = $totalCapital * ($riskPercent / 100);
+        $perPositionAlloc = min($slotAllocation, $riskAllocation);
         $openCount        = Trade::where('bot_id', $bot->id)->where('status', 'open')->where('mode', $bot->mode)->count();
         $availableSlots   = max(0, $maxPositions - $openCount);
 
@@ -89,6 +91,7 @@ class BotService
             'locked_idr'        => $lockedIdr,
             'per_position_alloc' => round($perPositionAlloc),
             'max_positions'     => $maxPositions,
+            'risk_percent'      => $riskPercent,
             'open_count'        => $openCount,
             'available_slots'   => $availableSlots,
             'utilization_pct'   => $totalCapital > 0 ? round(($lockedIdr / $totalCapital) * 100, 1) : 0,
@@ -147,15 +150,13 @@ class BotService
         if (($bot->settings?->strategy ?? '') === 'adaptive') {
             $adx       = $indicators['adx'] ?? 0;
             $spread    = $indicators['ema_spread_pct'] ?? 0;
-            $bbUpper   = $indicators['bb_upper'] ?? 0;
-            $bbLower   = $indicators['bb_lower'] ?? 0;
-            $bbMiddle  = $indicators['bb_middle'] ?? 0;
-            $bandwidth = $bbMiddle > 0 ? (($bbUpper - $bbLower) / $bbMiddle) * 100 : 0;
+            $bandwidth = $indicators['bb_bandwidth'] ?? 0;
 
             $regime = match (true) {
-                $adx >= 25 && $spread >= 0.15 => 'trending→EMA',
-                $adx < 20 && $bandwidth < 3.0 => 'squeeze→BB',
-                default                        => 'sideways→RSI',
+                $adx >= ($settings->adx_trend_threshold ?? 25) && $spread >= 0.20 => 'trending→EMA',
+                $adx >= 18 && $adx < ($settings->adx_trend_threshold ?? 25) && $bandwidth >= 2.0 => 'squeeze→BB',
+                $adx < max(15, ($settings->adx_trend_threshold ?? 25) - 5) && $bandwidth >= 1.6 && $bandwidth <= 5.5 => 'sideways→RSI',
+                default => 'ambiguous→HOLD',
             };
         }
 
@@ -196,6 +197,7 @@ class BotService
         $openTrade = Trade::where('bot_id', $bot->id)
             ->where('binance_pair', $binancePair)
             ->where('status', 'open')
+            ->where('mode', $bot->mode)
             ->first();
 
         if ($signal === 'buy' && ! $openTrade) {
@@ -259,8 +261,7 @@ class BotService
             return;
         }
 
-        // ── Full Balance Allocation ───────────────────────────────────────────
-        // Setiap posisi mendapat: total_capital / max_positions
+        // Alokasi dibatasi oleh risk_percent agar real mode tidak terlalu agresif.
         $tradeAmount = $portfolio['per_position_alloc'];
 
         // Pastikan modal bebas cukup
@@ -277,29 +278,22 @@ class BotService
         }
 
         $quantity = $tradeAmount / $idrPrice;
-        $slPct    = (float) ($settings->stop_loss_percent ?? 3);
-        $tpPct    = (float) ($settings->take_profit_percent ?? 5);
+        $baseSlPct = (float) ($settings->stop_loss_percent ?? 3);
+        $baseTpPct = (float) ($settings->take_profit_percent ?? 5);
 
-        // SL/TP berdasarkan persentase setting (lebih predictable untuk R:R)
-        // ATR hanya digunakan untuk SL agar lebih adaptif terhadap volatilitas,
-        // TP tetap berbasis persentase agar tidak terlalu kecil di kondisi volatilitas rendah
+        // Gunakan ATR untuk menyesuaikan lebar SL saat market volatil.
+        // Tujuannya mengurangi false stop out tanpa membiarkan risk melebar tak terkendali.
         $atr = (float) ($indicators['atr'] ?? 0);
+        $dynamicSlPct = $baseSlPct;
+
         if ($atr > 0 && ($indicators['current_price'] ?? 0) > 0) {
-            $usdtToIdr = $idrPrice / $indicators['current_price'];
-            $atrIdr    = $atr * $usdtToIdr;
-
-            $slByAtr = $idrPrice - ($atrIdr * 1.5);  // ATR × 1.5
-            $slByPct = $idrPrice * (1 - $slPct / 100);
-
-            // SL: ambil yang lebih ketat (harga lebih tinggi = loss lebih kecil)
-            $slPrice = max($slByAtr, $slByPct);
-        } else {
-            $slPrice = $idrPrice * (1 - $slPct / 100);
+            $atrPct = ($atr / max($indicators['current_price'], 0.00000001)) * 100;
+            $dynamicSlPct = max($baseSlPct, min($atrPct * 1.8, $baseSlPct * 1.75));
         }
 
-        // TP selalu berbasis persentase — tidak dibatasi ATR
-        // Ini memastikan minimum profit cukup besar untuk menutup biaya admin (fee 0.6%)
-        $tpPrice = $idrPrice * (1 + $tpPct / 100);
+        $dynamicTpPct = max($baseTpPct, $dynamicSlPct * 2.2);
+        $slPrice = $idrPrice * (1 - $dynamicSlPct / 100);
+        $tpPrice = $idrPrice * (1 + $dynamicTpPct / 100);
 
         $exchangeOrderId = null;
 

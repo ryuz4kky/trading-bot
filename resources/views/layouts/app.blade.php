@@ -23,6 +23,7 @@
             <div class="leading-tight">
                 <p class="font-bold text-slate-900 text-sm">CryptoBot</p>
                 <p class="text-[11px] text-slate-400">Auto Trading System</p>
+                <p class="text-[10px] text-slate-400">v{{ config('app.version') }}</p>
             </div>
         </div>
 
@@ -129,7 +130,10 @@
         </button>
         <div class="flex items-center gap-2">
             <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-sm shrink-0">₿</div>
-            <span class="font-bold text-slate-900 text-sm">CryptoBot</span>
+            <div class="leading-tight">
+                <p class="font-bold text-slate-900 text-sm">CryptoBot</p>
+                <p class="text-[10px] text-slate-400">v{{ config('app.version') }}</p>
+            </div>
         </div>
     </div>
 
@@ -140,7 +144,10 @@
             <div class="flex items-center justify-between gap-2 px-4 h-14 border-b border-slate-100">
                 <div class="flex items-center gap-2">
                     <div class="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center text-white font-bold text-sm">₿</div>
-                    <span class="font-bold text-slate-900 text-sm">CryptoBot</span>
+                    <div class="leading-tight">
+                        <p class="font-bold text-slate-900 text-sm">CryptoBot</p>
+                        <p class="text-[10px] text-slate-400">v{{ config('app.version') }}</p>
+                    </div>
                 </div>
                 <button @click="mob = false"
                         class="w-7 h-7 flex items-center justify-center text-slate-500 hover:bg-slate-100 rounded-lg">
