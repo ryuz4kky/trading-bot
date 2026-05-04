@@ -420,6 +420,7 @@ class BotSettings extends Component
             $existingTrade = Trade::where('bot_id', $this->bot->id)
                 ->where('pair', $indodaxPair)
                 ->where('status', 'open')
+                ->where('mode', $mode)
                 ->first();
 
             if ($existingTrade) {

@@ -155,6 +155,7 @@ class Dashboard extends Component
         $trade = Trade::where('bot_id', $this->bot->id)
             ->where('id', $tradeId)
             ->where('status', 'open')
+            ->where('mode', $this->bot->mode)
             ->first();
 
         if (! $trade) {

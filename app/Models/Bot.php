@@ -44,7 +44,7 @@ class Bot extends Model
 
     public function openTrades(): HasMany
     {
-        return $this->hasMany(Trade::class)->where('status', 'open');
+        return $this->hasMany(Trade::class)->where('status', 'open')->where('mode', $this->mode);
     }
 
     public function isRunning(): bool

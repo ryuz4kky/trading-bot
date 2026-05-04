@@ -638,7 +638,10 @@ class BotService
     {
         $trades = $singleTrade
             ? collect([$singleTrade])
-            : Trade::where('bot_id', $bot->id)->where('status', 'open')->get();
+            : Trade::where('bot_id', $bot->id)
+                ->where('status', 'open')
+                ->where('mode', $bot->mode)
+                ->get();
 
         $count = 0;
 
