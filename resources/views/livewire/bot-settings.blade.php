@@ -130,7 +130,7 @@
                 <p class="mt-1 text-[11px] text-slate-400">Pair Binance untuk analisis. Eksekusi otomatis ke IDR di Indodax.</p>
             </div>
 
-            {{-- Position Allocation --}}
+            {{-- Full Balance System --}}
             <div class="p-4 rounded-xl bg-blue-50 border border-blue-100">
                 <div class="flex items-start gap-3 mb-3">
                     <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shrink-0 mt-0.5">
@@ -139,9 +139,9 @@
                         </svg>
                     </div>
                     <div>
-                        <p class="text-sm font-semibold text-blue-900">Position Allocation</p>
+                        <p class="text-sm font-semibold text-blue-900">Full Balance System</p>
                         <p class="text-xs text-blue-600 mt-0.5">
-                            Alokasi per posisi dibatasi oleh Max Posisi dan Risk Percent.
+                            Modal dibagi rata ke semua posisi aktif.
                         </p>
                     </div>
                 </div>
@@ -158,15 +158,12 @@
                         @php
                             $simBal = (int) $simulationBalance;
                             $maxPos = max(1, (int) $maxPositions);
-                            $riskPct = max(0.1, (float) $riskPercent);
-                            $slotAlloc = $simBal > 0 ? $simBal / $maxPos : 0;
-                            $riskAlloc = $simBal > 0 ? $simBal * ($riskPct / 100) : 0;
-                            $perPos = round(min($slotAlloc, $riskAlloc));
+                            $perPos = $simBal > 0 ? round($simBal / $maxPos) : 0;
                         @endphp
                         <p class="text-sm font-bold text-blue-700 mt-0.5">
                             Rp {{ number_format($perPos, 0, ',', '.') }}
                         </p>
-                        <p class="text-[10px] text-blue-400">min(max posisi, {{ $riskPercent }}% modal)</p>
+                        <p class="text-[10px] text-blue-400">Total modal dibagi {{ $maxPositions }} posisi</p>
                     </div>
                 </div>
             </div>

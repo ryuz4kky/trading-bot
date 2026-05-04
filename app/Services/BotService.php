@@ -48,9 +48,7 @@ class BotService
 
         $this->monitorPositions($bot);
 
-        foreach ($bot->settings->pairs as $binancePair) {
-            $this->processPair($bot, $binancePair);
-        }
+        $this->processBestEntry($bot);
 
         $this->log($bot, 'info', 'Bot run selesai.');
     }
@@ -60,15 +58,14 @@ class BotService
     /**
      * Snapshot kondisi portofolio saat ini.
      *
+     * Konsep Full Balance System:
      * total_capital = free_idr + nilai IDR semua posisi terbuka.
-     * per_position  = min(total_capital / max_positions, total_capital * risk_percent)
-     * agar mode real tidak memakai porsi modal terlalu besar per entry.
+     * per_position  = total_capital / max_positions.
      */
     public function getPortfolioSnapshot(Bot $bot): array
     {
         $settings     = $bot->settings;
         $maxPositions = (int) ($settings?->max_positions ?? 4);
-        $riskPercent  = max(0.1, (float) ($settings?->risk_percent ?? 2));
 
         $freeIdr = $this->getAvailableIdr($bot);
 
@@ -78,10 +75,8 @@ class BotService
             ->where('mode', $bot->mode)
             ->sum('amount_idr');
 
-        $totalCapital    = $freeIdr + $lockedIdr;
-        $slotAllocation  = $maxPositions > 0 ? $totalCapital / $maxPositions : $totalCapital;
-        $riskAllocation  = $totalCapital * ($riskPercent / 100);
-        $perPositionAlloc = min($slotAllocation, $riskAllocation);
+        $totalCapital     = $freeIdr + $lockedIdr;
+        $perPositionAlloc = $maxPositions > 0 ? $totalCapital / $maxPositions : $totalCapital;
         $openCount        = Trade::where('bot_id', $bot->id)->where('status', 'open')->where('mode', $bot->mode)->count();
         $availableSlots   = max(0, $maxPositions - $openCount);
 
@@ -91,7 +86,6 @@ class BotService
             'locked_idr'        => $lockedIdr,
             'per_position_alloc' => round($perPositionAlloc),
             'max_positions'     => $maxPositions,
-            'risk_percent'      => $riskPercent,
             'open_count'        => $openCount,
             'available_slots'   => $availableSlots,
             'utilization_pct'   => $totalCapital > 0 ? round(($lockedIdr / $totalCapital) * 100, 1) : 0,
@@ -108,6 +102,9 @@ class BotService
             'display_pair' => $this->binance->getDisplayName($binancePair),
             'indodax_pair' => $this->binance->mapToIndodaxPair($binancePair),
             'signal'       => 'hold',
+            'signal_score' => 0,
+            'signal_setup' => null,
+            'signal_scores' => [],
             'indicators'   => [],
             'idr_price'    => 0,
             'error'        => null,
@@ -137,7 +134,7 @@ class BotService
             $idrPrice = round(($indicators['current_price'] ?? 0) * 16000);
         }
 
-        $signal = $this->strategy->analyze(
+        $analysis = $this->strategy->analyzeDetailed(
             $indicators,
             $bot->settings?->strategy        ?? 'ema_crossover',
             (float) ($bot->settings?->volume_min_ratio   ?? 1.2),
@@ -153,18 +150,22 @@ class BotService
             $bandwidth = $indicators['bb_bandwidth'] ?? 0;
 
             $regime = match (true) {
-                $adx >= ($settings->adx_trend_threshold ?? 25) && $spread >= 0.20 => 'trending→EMA',
-                $adx >= 18 && $adx < ($settings->adx_trend_threshold ?? 25) && $bandwidth >= 2.0 => 'squeeze→BB',
-                $adx < max(15, ($settings->adx_trend_threshold ?? 25) - 5) && $bandwidth >= 1.6 && $bandwidth <= 5.5 => 'sideways→RSI',
+                $adx >= ($settings->adx_trend_threshold ?? 25) && $spread >= 0.15 => 'trending→EMA',
+                $adx >= 17 && $adx < ($settings->adx_trend_threshold ?? 25) && $bandwidth >= 1.7 => 'squeeze→BB',
+                $adx < ($settings->adx_trend_threshold ?? 25) && $bandwidth >= 1.2 && $bandwidth <= 6.5 => 'sideways→RSI',
+                $spread >= 0.15 => 'ambiguous→EMA',
                 default => 'ambiguous→HOLD',
             };
         }
 
         return array_merge($base, [
-            'signal'     => $signal,
-            'indicators' => $indicators,
-            'idr_price'  => $idrPrice,
-            'regime'     => $regime,
+            'signal'        => $analysis['signal'],
+            'signal_score'  => $analysis['score'],
+            'signal_setup'  => $analysis['setup'],
+            'signal_scores' => $analysis['scores'],
+            'indicators'    => $indicators,
+            'idr_price'     => $idrPrice,
+            'regime'        => $regime,
         ]);
     }
 
@@ -178,6 +179,99 @@ class BotService
     }
 
     // ─── Trade Processing ──────────────────────────────────────────────────────
+
+    private function processBestEntry(Bot $bot): void
+    {
+        if (! $bot->settings || empty($bot->settings->pairs)) {
+            return;
+        }
+
+        $openCount = Trade::where('bot_id', $bot->id)
+            ->where('status', 'open')
+            ->where('mode', $bot->mode)
+            ->count();
+
+        if ($openCount >= (int) ($bot->settings->max_positions ?? 1)) {
+            $this->log($bot, 'info', 'Slot posisi penuh. Tidak membuka entry baru.');
+            return;
+        }
+
+        $candidates = [];
+
+        foreach ($bot->settings->pairs as $binancePair) {
+            $scan = $this->scanPair($bot, $binancePair);
+
+            if ($scan['error'] || $scan['idr_price'] <= 0) {
+                continue;
+            }
+
+            $openTrade = Trade::where('bot_id', $bot->id)
+                ->where('binance_pair', $binancePair)
+                ->where('status', 'open')
+                ->where('mode', $bot->mode)
+                ->first();
+
+            if ($scan['signal'] === 'sell' && $openTrade) {
+                $this->processSignalSell($bot, $openTrade, $scan);
+                continue;
+            }
+
+            if ($scan['signal'] !== 'buy' || $openTrade || $this->isInCooldown($bot, $binancePair)) {
+                continue;
+            }
+
+            $candidates[] = $scan;
+        }
+
+        if (empty($candidates)) {
+            $this->log($bot, 'info', 'Tidak ada kandidat entry yang lolos scoring.');
+            return;
+        }
+
+        usort($candidates, fn(array $a, array $b) => ($b['signal_score'] <=> $a['signal_score']));
+
+        $best = $candidates[0];
+
+        $this->log($bot, 'info', sprintf(
+            'Best entry dipilih: %s | score: %s | setup: %s | regime: %s',
+            $best['pair'],
+            $best['signal_score'],
+            $best['signal_setup'] ?? '-',
+            $best['regime'] ?? '-'
+        ));
+
+        $this->executeBuy(
+            $bot,
+            $best['pair'],
+            $best['indodax_pair'],
+            $best['idr_price'],
+            $best['indicators']
+        );
+    }
+
+    private function processSignalSell(Bot $bot, Trade $openTrade, array $scan): void
+    {
+        $strategy = $bot->settings?->strategy ?? 'ema_crossover';
+        $entryPrice = (float) $openTrade->entry_price;
+        $profitPct = $entryPrice > 0 ? (($scan['idr_price'] - $entryPrice) / $entryPrice) * 100 : 0;
+        $minProfitToSell = 1.2;
+
+        if ($profitPct < $minProfitToSell) {
+            return;
+        }
+
+        if (in_array($strategy, ['rsi_mean_reversion', 'bb_squeeze'], true)) {
+            $this->executeSell($bot, $openTrade, $scan['idr_price'], 'signal');
+            return;
+        }
+
+        if ($strategy === 'adaptive') {
+            $regime = $scan['regime'] ?? '';
+            if (str_contains($regime, 'sideways') || str_contains($regime, 'squeeze')) {
+                $this->executeSell($bot, $openTrade, $scan['idr_price'], 'signal');
+            }
+        }
+    }
 
     private function processPair(Bot $bot, string $binancePair): void
     {
@@ -261,7 +355,7 @@ class BotService
             return;
         }
 
-        // Alokasi dibatasi oleh risk_percent agar real mode tidak terlalu agresif.
+        // Full balance allocation: modal dibagi rata sesuai max_positions.
         $tradeAmount = $portfolio['per_position_alloc'];
 
         // Pastikan modal bebas cukup
@@ -294,6 +388,16 @@ class BotService
         $dynamicTpPct = max($baseTpPct, $dynamicSlPct * 2.2);
         $slPrice = $idrPrice * (1 - $dynamicSlPct / 100);
         $tpPrice = $idrPrice * (1 + $dynamicTpPct / 100);
+
+        $chandelierUsdt = (float) ($indicators['chandelier_long'] ?? 0);
+        if ($chandelierUsdt > 0 && ($indicators['current_price'] ?? 0) > 0) {
+            $usdtToIdr = $idrPrice / $indicators['current_price'];
+            $chandelierIdr = $chandelierUsdt * $usdtToIdr;
+
+            if ($chandelierIdr > 0 && $chandelierIdr < $idrPrice) {
+                $slPrice = max($slPrice, $chandelierIdr);
+            }
+        }
 
         $exchangeOrderId = null;
 
@@ -438,6 +542,8 @@ class BotService
                 continue;
             }
 
+            $this->refreshChandelierStop($bot, $trade, $currentPrice);
+
             // ── Trailing Stop Loss ────────────────────────────────────────────
             if ($trailingEnabled && $currentPrice > $trade->entry_price) {
                 $peakPrice = (float) ($trade->peak_price ?? $trade->entry_price);
@@ -474,6 +580,51 @@ class BotService
             if ($reason) {
                 $this->executeSell($bot, $trade, $currentPrice, $reason);
             }
+        }
+    }
+
+    private function refreshChandelierStop(Bot $bot, Trade $trade, float $currentPrice): void
+    {
+        $settings = $bot->settings;
+
+        if (! $settings || $currentPrice <= 0) {
+            return;
+        }
+
+        $klines = $this->binance->getKlines(
+            $trade->binance_pair,
+            $settings->kline_interval ?? '15m',
+            $this->resolveKlineLimit($settings)
+        );
+
+        if (empty($klines)) {
+            return;
+        }
+
+        $indicators = $this->indicator->calculate(
+            $klines,
+            $settings->ema_fast ?? 20,
+            $settings->ema_slow ?? 50,
+            $settings->rsi_period ?? 14,
+            $settings->bb_period ?? 20
+        );
+
+        $chandelierUsdt = (float) ($indicators['chandelier_long'] ?? 0);
+        $indicatorPrice = (float) ($indicators['current_price'] ?? 0);
+
+        if ($chandelierUsdt <= 0 || $indicatorPrice <= 0) {
+            return;
+        }
+
+        $chandelierIdr = $chandelierUsdt * ($currentPrice / $indicatorPrice);
+
+        if ($chandelierIdr > (float) $trade->stop_loss_price && $chandelierIdr < $currentPrice) {
+            $trade->update(['stop_loss_price' => $chandelierIdr]);
+            $this->log($bot, 'info', sprintf(
+                'Chandelier SL %s diperbarui → Rp %s',
+                $trade->binance_pair,
+                number_format($chandelierIdr, 0, ',', '.')
+            ));
         }
     }
 

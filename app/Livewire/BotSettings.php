@@ -165,18 +165,18 @@ class BotSettings extends Component
         // R:R minimum 1:2.5 setelah fee Indodax 0.6% round trip
         // SL kecil + TP besar = win rate 35-40% sudah cukup profitable
         match ($this->strategy) {
-            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.4, tp: 6.0, rsiBuy: 33, adx: 27),
-            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.3, tp: 5.5, rsiBuy: 32, adx: 25),
-            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 2.8, tp: 7.0, rsiBuy: 35, adx: 27),
-            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 2.4, tp: 6.0, rsiBuy: 40, adx: 27),
+            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.3, tp: 5.5, rsiBuy: 36, adx: 23),
+            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.3, tp: 5.5, rsiBuy: 35, adx: 25),
+            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 2.8, tp: 7.0, rsiBuy: 35, adx: 25),
+            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 2.4, tp: 6.0, rsiBuy: 38, adx: 25),
         };
 
-        $this->cooldownCandles   = '5';
-        $this->volumeMinRatio    = '1.35';
+        $this->cooldownCandles   = '3';
+        $this->volumeMinRatio    = '1.1';
         $this->trailingSlEnabled = true;
         $this->trailingSlPercent = '1.8';
         $this->riskPercent       = '2';
-        $this->maxPositions      = '3';
+        $this->maxPositions      = '1';
     }
 
     private function applyValues(

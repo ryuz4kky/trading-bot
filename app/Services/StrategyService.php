@@ -5,7 +5,7 @@ namespace App\Services;
 class StrategyService
 {
     private const ADX_TREND_MIN  = 20.0;
-    private const EMA_SPREAD_MIN = 0.20;
+    private const EMA_SPREAD_MIN = 0.15;
 
     /**
      * Analyze indicators and return signal: 'buy', 'sell', or 'hold'.
@@ -18,19 +18,42 @@ class StrategyService
         int    $rsiBuyThreshold  = 35,
         int    $adxTrendThreshold = 25
     ): string {
+        return $this->analyzeDetailed(
+            $indicators,
+            $strategy,
+            $volumeMinRatio,
+            $rsiBuyThreshold,
+            $adxTrendThreshold
+        )['signal'];
+    }
+
+    public function analyzeDetailed(
+        array  $indicators,
+        string $strategy         = 'ema_crossover',
+        float  $volumeMinRatio   = 1.2,
+        int    $rsiBuyThreshold  = 35,
+        int    $adxTrendThreshold = 25
+    ): array {
         if (! ($indicators['valid'] ?? false)) {
-            return 'hold';
+            return ['signal' => 'hold', 'score' => 0, 'setup' => null, 'scores' => []];
         }
 
         if ($strategy === 'adaptive') {
-            return $this->adaptive($indicators, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
+            return $this->adaptiveDetailed($indicators, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
         }
 
-        return match ($strategy) {
+        $signal = match ($strategy) {
             'rsi_mean_reversion' => $this->rsiMeanReversion($indicators, $volumeMinRatio, $rsiBuyThreshold),
             'bb_squeeze'         => $this->bbSqueeze($indicators, $volumeMinRatio),
             default              => $this->emaCrossover($indicators, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold),
         };
+
+        return [
+            'signal' => $signal,
+            'score'  => $signal === 'buy' ? 7 : 0,
+            'setup'  => $strategy,
+            'scores' => [],
+        ];
     }
 
     /**
@@ -43,28 +66,180 @@ class StrategyService
      */
     private function adaptive(array $ind, float $volumeMinRatio, int $rsiBuyThreshold, int $adxTrendThreshold): string
     {
-        $adx          = $ind['adx']           ?? 0.0;
-        $emaSpreadPct = $ind['ema_spread_pct'] ?? 0.0;
-        $bandwidth   = $ind['bb_bandwidth'] ?? 0.0;
-        $adxSideways = max(15, $adxTrendThreshold - 5);
+        return $this->adaptiveDetailed($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold)['signal'];
+    }
 
-        // Trending: ADX kuat + EMA spread cukup besar
-        if ($adx >= $adxTrendThreshold && $emaSpreadPct >= self::EMA_SPREAD_MIN) {
-            return $this->emaCrossover($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold);
+    private function adaptiveDetailed(array $ind, float $volumeMinRatio, int $rsiBuyThreshold, int $adxTrendThreshold): array
+    {
+        if ($this->adaptiveSellSignal($ind)) {
+            return ['signal' => 'sell', 'score' => 0, 'setup' => 'exit', 'scores' => []];
         }
 
-        // Squeeze forming: market mulai bertransisi dari sempit ke ekspansi
-        if ($adx >= 18 && $adx < $adxTrendThreshold && $bandwidth >= 2.0) {
-            return $this->bbSqueeze($ind, $volumeMinRatio);
+        $scores = [
+            'trend'   => $this->trendBuyScore($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold),
+            'mean'    => $this->meanReversionBuyScore($ind, $volumeMinRatio, $rsiBuyThreshold, $adxTrendThreshold),
+            'squeeze' => $this->squeezeBuyScore($ind, $volumeMinRatio, $adxTrendThreshold),
+        ];
+
+        $bestScore = max($scores);
+        $setup = array_search($bestScore, $scores, true) ?: null;
+
+        return [
+            'signal' => $bestScore >= 9 ? 'buy' : 'hold',
+            'score'  => $bestScore,
+            'setup'  => $setup,
+            'scores' => $scores,
+        ];
+    }
+
+    private function adaptiveSellSignal(array $ind): bool
+    {
+        $price    = (float) ($ind['current_price'] ?? 0.0);
+        $emaFast  = (float) ($ind['ema_fast'] ?? 0.0);
+        $emaSlow  = (float) ($ind['ema_slow'] ?? 0.0);
+        $rsi      = (float) ($ind['rsi'] ?? 50.0);
+        $bbUpper  = (float) ($ind['bb_upper'] ?? 0.0);
+
+        if ($price <= 0) {
+            return false;
         }
 
-        // Sideways murni saja yang boleh mean reversion.
-        if ($adx < $adxSideways && $bandwidth >= 1.6 && $bandwidth <= 5.5) {
-            return $this->rsiMeanReversion($ind, $volumeMinRatio, min($rsiBuyThreshold, 33));
+        $meanReversionExit = $bbUpper > 0 && $rsi >= 68 && $price >= $bbUpper * 0.985;
+        $trendBreakExit = $emaFast > 0 && $emaSlow > 0 && $price < $emaSlow && $emaFast < $emaSlow && $rsi >= 62;
+
+        return $meanReversionExit || $trendBreakExit;
+    }
+
+    private function trendBuyScore(array $ind, float $volumeMinRatio, int $rsiBuyThreshold, int $adxTrendThreshold): int
+    {
+        $price          = (float) ($ind['current_price'] ?? 0.0);
+        $emaFast        = (float) ($ind['ema_fast'] ?? 0.0);
+        $emaSlow        = (float) ($ind['ema_slow'] ?? 0.0);
+        $prevEmaFast    = (float) ($ind['prev_ema_fast'] ?? $emaFast);
+        $prevEmaSlow    = (float) ($ind['prev_ema_slow'] ?? $emaSlow);
+        $rsi            = (float) ($ind['rsi'] ?? 50.0);
+        $prevRsi        = (float) ($ind['prev_rsi'] ?? $rsi);
+        $adx            = (float) ($ind['adx'] ?? 0.0);
+        $emaSpreadPct   = (float) ($ind['ema_spread_pct'] ?? 0.0);
+        $kama           = (float) ($ind['kama'] ?? 0.0);
+        $prevKama       = (float) ($ind['prev_kama'] ?? $kama);
+        $kamaSlopePct   = (float) ($ind['kama_slope_pct'] ?? 0.0);
+        $cycleRsi       = (float) ($ind['cycle_rsi'] ?? $rsi);
+        $prevCycleRsi   = (float) ($ind['prev_cycle_rsi'] ?? $cycleRsi);
+        $macdHist       = (float) ($ind['macd_histogram'] ?? 0.0);
+        $prevMacdHist   = (float) ($ind['prev_macd_histogram'] ?? $macdHist);
+        $volumeRatio    = (float) ($ind['volume_ratio'] ?? 1.0);
+        $bodyRatio      = (float) ($ind['candle_body_ratio'] ?? 0.0);
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
+        $isBullish      = (bool) ($ind['is_bullish'] ?? false);
+
+        if ($price <= 0 || $emaFast <= 0 || $emaSlow <= 0 || $rsi > 68 || $cycleRsi > 70 || $priceChangePct > 3.2) {
+            return 0;
         }
 
-        // Kondisi ambigu sering menghasilkan chop. Lebih aman skip.
-        return 'hold';
+        $score = 0;
+        $score += $kama > 0 && $price > $kama ? 2 : 0;
+        $score += $kama > 0 && $kama >= $prevKama ? 1 : 0;
+        $score += $kamaSlopePct >= 0.02 ? 1 : 0;
+        $score += $emaFast > $emaSlow ? 2 : 0;
+        $score += $price > $emaFast ? 1 : 0;
+        $score += $price > $emaSlow ? 1 : 0;
+        $score += $emaFast >= $prevEmaFast && $emaSlow >= $prevEmaSlow ? 1 : 0;
+        $score += $adx >= max(17, $adxTrendThreshold - 4) ? 1 : 0;
+        $score += $emaSpreadPct >= 0.12 ? 1 : 0;
+        $score += $cycleRsi >= max(40, $rsiBuyThreshold) && $cycleRsi <= 64 ? 2 : 0;
+        $score += $cycleRsi >= ($prevCycleRsi - 1.0) ? 1 : 0;
+        $score += $macdHist > 0 ? 2 : 0;
+        $score += $macdHist >= $prevMacdHist ? 1 : 0;
+        $score += $rsi >= ($prevRsi - 2.0) ? 1 : 0;
+        $score += $isBullish ? 1 : 0;
+        $score += $bodyRatio >= 0.25 ? 1 : 0;
+        $score += $volumeRatio >= max(1.05, $volumeMinRatio) ? 1 : 0;
+
+        return $score;
+    }
+
+    private function meanReversionBuyScore(array $ind, float $volumeMinRatio, int $rsiBuyThreshold, int $adxTrendThreshold): int
+    {
+        $price          = (float) ($ind['current_price'] ?? 0.0);
+        $rsi            = (float) ($ind['rsi'] ?? 50.0);
+        $prevRsi        = (float) ($ind['prev_rsi'] ?? $rsi);
+        $adx            = (float) ($ind['adx'] ?? 0.0);
+        $bbLower        = (float) ($ind['bb_lower'] ?? 0.0);
+        $kama           = (float) ($ind['kama'] ?? 0.0);
+        $kamaSlopePct   = (float) ($ind['kama_slope_pct'] ?? 0.0);
+        $cycleRsi       = (float) ($ind['cycle_rsi'] ?? $rsi);
+        $prevCycleRsi   = (float) ($ind['prev_cycle_rsi'] ?? $cycleRsi);
+        $macdHist       = (float) ($ind['macd_histogram'] ?? 0.0);
+        $prevMacdHist   = (float) ($ind['prev_macd_histogram'] ?? $macdHist);
+        $bbPosition     = (float) ($ind['bb_position'] ?? 0.5);
+        $bandwidth      = (float) ($ind['bb_bandwidth'] ?? 0.0);
+        $volumeRatio    = (float) ($ind['volume_ratio'] ?? 1.0);
+        $bodyRatio      = (float) ($ind['candle_body_ratio'] ?? 0.0);
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
+        $isBullish      = (bool) ($ind['is_bullish'] ?? false);
+
+        if ($price <= 0 || $bbLower <= 0 || $rsi > 48 || $cycleRsi > 50 || $priceChangePct > 2.4) {
+            return 0;
+        }
+
+        $score = 0;
+        $score += $kama > 0 && $price >= $kama * 0.985 ? 1 : 0;
+        $score += $kamaSlopePct >= -0.05 ? 1 : 0;
+        $score += $adx <= max(24, $adxTrendThreshold) ? 1 : 0;
+        $score += $bandwidth >= 1.0 && $bandwidth <= 7.5 ? 1 : 0;
+        $score += $cycleRsi <= max(38, $rsiBuyThreshold) ? 2 : 0;
+        $score += $cycleRsi >= ($prevCycleRsi - 1.0) ? 1 : 0;
+        $score += $macdHist >= $prevMacdHist ? 1 : 0;
+        $score += $macdHist > 0 ? 1 : 0;
+        $score += $rsi <= $rsiBuyThreshold ? 1 : 0;
+        $score += $prevRsi <= ($rsi + 2.0) ? 1 : 0;
+        $score += $price <= $bbLower * 1.012 ? 2 : 0;
+        $score += $bbPosition <= 0.35 ? 1 : 0;
+        $score += $isBullish ? 1 : 0;
+        $score += $bodyRatio >= 0.22 ? 1 : 0;
+        $score += $volumeRatio >= max(0.9, $volumeMinRatio - 0.25) ? 1 : 0;
+
+        return $score;
+    }
+
+    private function squeezeBuyScore(array $ind, float $volumeMinRatio, int $adxTrendThreshold): int
+    {
+        $price          = (float) ($ind['current_price'] ?? 0.0);
+        $rsi            = (float) ($ind['rsi'] ?? 50.0);
+        $adx            = (float) ($ind['adx'] ?? 0.0);
+        $bbMiddle       = (float) ($ind['bb_middle'] ?? 0.0);
+        $kama           = (float) ($ind['kama'] ?? 0.0);
+        $prevKama       = (float) ($ind['prev_kama'] ?? $kama);
+        $cycleRsi       = (float) ($ind['cycle_rsi'] ?? $rsi);
+        $macdHist       = (float) ($ind['macd_histogram'] ?? 0.0);
+        $prevMacdHist   = (float) ($ind['prev_macd_histogram'] ?? $macdHist);
+        $bandwidth      = (float) ($ind['bb_bandwidth'] ?? 0.0);
+        $prevBandwidth  = (float) ($ind['prev_bb_bandwidth'] ?? $bandwidth);
+        $volumeRatio    = (float) ($ind['volume_ratio'] ?? 1.0);
+        $bodyRatio      = (float) ($ind['candle_body_ratio'] ?? 0.0);
+        $priceChangePct = abs((float) ($ind['price_change_pct'] ?? 0.0));
+        $isBullish      = (bool) ($ind['is_bullish'] ?? false);
+
+        if ($price <= 0 || $bbMiddle <= 0 || $prevBandwidth <= 0 || $rsi > 68 || $cycleRsi > 68 || $priceChangePct > 3.0) {
+            return 0;
+        }
+
+        $score = 0;
+        $score += $kama > 0 && $price > $kama ? 2 : 0;
+        $score += $kama > 0 && $kama >= $prevKama ? 1 : 0;
+        $score += $bandwidth >= 1.4 ? 1 : 0;
+        $score += $bandwidth >= $prevBandwidth * 1.02 ? 2 : 0;
+        $score += $price > $bbMiddle ? 2 : 0;
+        $score += $adx >= max(16, $adxTrendThreshold - 8) ? 1 : 0;
+        $score += $cycleRsi >= 42 && $cycleRsi <= 66 ? 1 : 0;
+        $score += $macdHist > 0 ? 1 : 0;
+        $score += $macdHist >= $prevMacdHist ? 1 : 0;
+        $score += $isBullish ? 1 : 0;
+        $score += $bodyRatio >= 0.25 ? 1 : 0;
+        $score += $volumeRatio >= max(1.05, $volumeMinRatio) ? 1 : 0;
+
+        return $score;
     }
 
     // ─── Strategi 1: EMA Crossover + RSI (default) ───────────────────────────
@@ -95,12 +270,12 @@ class StrategyService
         // Gunakan threshold dari settings user, bukan konstanta global
         $isTrending = ($adx >= $adxTrendThreshold) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
         $trendStrengthImproving = $emaFast >= $prevEmaFast && $emaSlow >= $prevEmaSlow;
-        $rsiIsHealthy = $rsi >= max($rsiBuyThreshold, 40) && $rsi <= 56 && $rsi >= $prevRsi;
-        $volumeConfirmed = $volumeRatio >= max($volumeMinRatio, 1.35);
+        $rsiIsHealthy = $rsi >= max($rsiBuyThreshold, 38) && $rsi <= 60 && $rsi >= ($prevRsi - 1.5);
+        $volumeConfirmed = $volumeRatio >= max($volumeMinRatio, 1.15);
 
         if ($isTrending && $price > $emaFast && $price > $emaSlow && $emaFast > $emaSlow
             && $trendStrengthImproving && $rsiIsHealthy && $isBullish
-            && $bodyRatio >= 0.45 && $priceChangePct <= 1.8
+            && $bodyRatio >= 0.30 && $priceChangePct <= 2.4
             && $volumeConfirmed
         ) {
             return 'buy';
@@ -141,14 +316,14 @@ class StrategyService
 
         // BUY: oversold + harga dekat/di bawah lower band + reversal + volume konfirmasi
         // Syarat ketat: RSI harus benar-benar oversold (bukan sekadar rendah)
-        if ($rsi <= min($rsiBuyThreshold, 33)
-            && $prevRsi < $rsi
-            && $price <= $bbLower * 1.003
-            && $bbPosition <= 0.18
+        if ($rsi <= $rsiBuyThreshold
+            && $prevRsi <= ($rsi + 1.5)
+            && $price <= $bbLower * 1.008
+            && $bbPosition <= 0.30
             && $isBullish
-            && $bodyRatio >= 0.35
-            && $priceChangePct <= 1.2
-            && $volumeRatio >= max(1.0, $volumeMinRatio - 0.1)
+            && $bodyRatio >= 0.25
+            && $priceChangePct <= 1.8
+            && $volumeRatio >= max(0.95, $volumeMinRatio - 0.2)
         ) {
             return 'buy';
         }
@@ -191,12 +366,12 @@ class StrategyService
         // BUY: breakout ke atas middle BB + ADX mulai naik + RSI < 60 + bullish candle
         // Bandwidth > 2% berarti squeeze sudah mulai melebar (breakout terjadi)
         // Volume wajib tinggi saat breakout — squeeze tanpa volume = false breakout
-        if ($prevBandwidth > 0 && $bandwidth > max(2.0, $prevBandwidth * 1.08)
-            && $price > $bbMiddle && $adx >= 18
-            && $rsi >= 45 && $rsi <= 58
-            && $isBullish && $bodyRatio >= 0.45
-            && $priceChangePct <= 1.8
-            && $volumeRatio >= max($volumeMinRatio, 1.3)
+        if ($prevBandwidth > 0 && $bandwidth > max(1.7, $prevBandwidth * 1.03)
+            && $price > $bbMiddle && $adx >= 17
+            && $rsi >= 42 && $rsi <= 62
+            && $isBullish && $bodyRatio >= 0.30
+            && $priceChangePct <= 2.4
+            && $volumeRatio >= max($volumeMinRatio, 1.15)
         ) {
             return 'buy';
         }

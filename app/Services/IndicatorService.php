@@ -30,6 +30,149 @@ class IndicatorService
         return round($ema, 8);
     }
 
+    public function calculateKAMA(array $prices, int $erPeriod = 10, int $fastPeriod = 2, int $slowPeriod = 30): float
+    {
+        $count = count($prices);
+
+        if ($count < $erPeriod + 1) {
+            return 0.0;
+        }
+
+        $fastSC = 2 / ($fastPeriod + 1);
+        $slowSC = 2 / ($slowPeriod + 1);
+        $kama = array_sum(array_slice($prices, 0, $erPeriod)) / $erPeriod;
+
+        for ($i = $erPeriod; $i < $count; $i++) {
+            $change = abs($prices[$i] - $prices[$i - $erPeriod]);
+            $volatility = 0.0;
+
+            for ($j = $i - $erPeriod + 1; $j <= $i; $j++) {
+                $volatility += abs($prices[$j] - $prices[$j - 1]);
+            }
+
+            $er = $volatility > 0 ? $change / $volatility : 0.0;
+            $sc = ($er * ($fastSC - $slowSC) + $slowSC) ** 2;
+            $kama = $kama + $sc * ($prices[$i] - $kama);
+        }
+
+        return round($kama, 8);
+    }
+
+    public function estimateCyclePeriod(array $prices, int $minPeriod = 10, int $maxPeriod = 30): int
+    {
+        $count = count($prices);
+
+        if ($count < $maxPeriod + 2) {
+            return 14;
+        }
+
+        $returns = [];
+        for ($i = 1; $i < $count; $i++) {
+            $returns[] = $prices[$i] - $prices[$i - 1];
+        }
+
+        $bestLag = 14;
+        $bestCorr = -1.0;
+        $sampleSize = min(60, count($returns) - $maxPeriod);
+
+        if ($sampleSize < $minPeriod) {
+            return 14;
+        }
+
+        for ($lag = $minPeriod; $lag <= $maxPeriod; $lag++) {
+            $recent = array_slice($returns, -$sampleSize);
+            $shifted = array_slice($returns, -$sampleSize - $lag, $sampleSize);
+            $corr = abs($this->correlation($recent, $shifted));
+
+            if ($corr > $bestCorr) {
+                $bestCorr = $corr;
+                $bestLag = $lag;
+            }
+        }
+
+        return $bestLag;
+    }
+
+    private function correlation(array $a, array $b): float
+    {
+        $n = min(count($a), count($b));
+
+        if ($n <= 1) {
+            return 0.0;
+        }
+
+        $a = array_slice($a, 0, $n);
+        $b = array_slice($b, 0, $n);
+        $avgA = array_sum($a) / $n;
+        $avgB = array_sum($b) / $n;
+        $num = 0.0;
+        $denA = 0.0;
+        $denB = 0.0;
+
+        for ($i = 0; $i < $n; $i++) {
+            $da = $a[$i] - $avgA;
+            $db = $b[$i] - $avgB;
+            $num += $da * $db;
+            $denA += $da ** 2;
+            $denB += $db ** 2;
+        }
+
+        $den = sqrt($denA * $denB);
+
+        return $den > 0 ? $num / $den : 0.0;
+    }
+
+    public function calculateMACD(array $prices, int $fastPeriod = 12, int $slowPeriod = 26, int $signalPeriod = 9): array
+    {
+        $count = count($prices);
+        $minCount = max($slowPeriod + $signalPeriod, $fastPeriod + $signalPeriod);
+
+        if ($count < $minCount) {
+            return ['macd' => 0.0, 'signal' => 0.0, 'histogram' => 0.0, 'prev_histogram' => 0.0];
+        }
+
+        $macdLine = [];
+        for ($i = $slowPeriod; $i <= $count; $i++) {
+            $slice = array_slice($prices, 0, $i);
+            $macdLine[] = $this->calculateEMA($slice, $fastPeriod) - $this->calculateEMA($slice, $slowPeriod);
+        }
+
+        $signal = $this->calculateEMA($macdLine, $signalPeriod);
+        $macd = end($macdLine) ?: 0.0;
+        $prevMacd = count($macdLine) > 1 ? $macdLine[count($macdLine) - 2] : $macd;
+        $prevSignal = count($macdLine) > $signalPeriod
+            ? $this->calculateEMA(array_slice($macdLine, 0, -1), $signalPeriod)
+            : $signal;
+
+        return [
+            'macd'           => round($macd, 8),
+            'signal'         => round($signal, 8),
+            'histogram'      => round($macd - $signal, 8),
+            'prev_histogram' => round($prevMacd - $prevSignal, 8),
+        ];
+    }
+
+    public function calculateChandelierExit(array $klines, int $period = 22, float $atrMultiplier = 3.0): array
+    {
+        if (count($klines) < $period + 1) {
+            return ['long' => 0.0, 'short' => 0.0];
+        }
+
+        $slice = array_slice($klines, -$period);
+        $highestHigh = max(array_map(fn($k) => (float) $k[2], $slice));
+        $lowestLow = min(array_map(fn($k) => (float) $k[3], $slice));
+        $atr = $this->calculateATR($klines, min(22, $period));
+
+        if ($atr <= 0) {
+            return ['long' => 0.0, 'short' => 0.0];
+        }
+
+        return [
+            'long'  => round($highestHigh - ($atr * $atrMultiplier), 8),
+            'short' => round($lowestLow + ($atr * $atrMultiplier), 8),
+        ];
+    }
+
     /**
      * Calculate Relative Strength Index using Wilder's smoothing method.
      */
@@ -278,6 +421,22 @@ class IndicatorService
         $prevRsi     = count($closes) > $rsiPeriod + 1
             ? $this->calculateRSI(array_slice($closes, 0, -1), $rsiPeriod)
             : $rsiNow;
+        $cyclePeriod = $this->estimateCyclePeriod($closes);
+        $cycleRsi = $this->calculateRSI($closes, $cyclePeriod);
+        $prevCycleRsi = count($closes) > $cyclePeriod + 1
+            ? $this->calculateRSI(array_slice($closes, 0, -1), $cyclePeriod)
+            : $cycleRsi;
+        $kamaPeriod = max(10, min(20, (int) round($cyclePeriod * 0.75)));
+        $kama = $this->calculateKAMA($closes, $kamaPeriod);
+        $prevKama = count($closes) > $kamaPeriod + 1
+            ? $this->calculateKAMA(array_slice($closes, 0, -1), $kamaPeriod)
+            : $kama;
+        $macdFast = max(5, (int) round($cyclePeriod / 2));
+        $macdSlow = max($macdFast + 2, $cyclePeriod);
+        $macdSignal = max(4, (int) round($cyclePeriod / 3));
+        $macd = $this->calculateMACD($closes, $macdFast, $macdSlow, $macdSignal);
+        $chandelierPeriod = max(14, min(30, $cyclePeriod));
+        $chandelier = $this->calculateChandelierExit($klines, $chandelierPeriod, 3.0);
         $bbRange     = max(0.00000001, $bb['upper'] - $bb['lower']);
         $bbPosition  = round(($currentPrice - $bb['lower']) / $bbRange, 4);
         $prevBbMiddle = $prevBb['middle'] ?? 0.0;
@@ -295,6 +454,18 @@ class IndicatorService
             'prev_ema_slow'  => $prevEmaSlow,
             'rsi'            => $rsiNow,
             'prev_rsi'       => $prevRsi,
+            'cycle_period'   => $cyclePeriod,
+            'cycle_rsi'      => $cycleRsi,
+            'prev_cycle_rsi' => $prevCycleRsi,
+            'kama'           => $kama,
+            'prev_kama'      => $prevKama,
+            'kama_slope_pct' => $prevKama > 0 ? round((($kama - $prevKama) / $prevKama) * 100, 4) : 0.0,
+            'macd'           => $macd['macd'],
+            'macd_signal'    => $macd['signal'],
+            'macd_histogram' => $macd['histogram'],
+            'prev_macd_histogram' => $macd['prev_histogram'],
+            'chandelier_long' => $chandelier['long'],
+            'chandelier_short' => $chandelier['short'],
             'atr'            => $this->calculateATR($klines),
             'adx'            => $this->calculateADX($klines),
             'ema_spread_pct' => $emaSpreadPct,
