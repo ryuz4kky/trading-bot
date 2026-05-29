@@ -162,21 +162,22 @@ class BotSettings extends Component
 
     public function applyRecommended(): void
     {
-        // R:R minimum 1:2.5 setelah fee Indodax 0.6% round trip
-        // SL kecil + TP besar = win rate 35-40% sudah cukup profitable
+        // R:R 1:2.5+ setelah fee Indodax 0.6% round trip
+        // EMA9/21 di 1H: lebih responsif, less noise vs 15m
+        // SL 4% memberi ruang napas di 1H, TP 11% = R:R ~1:2.75
         match ($this->strategy) {
-            'adaptive'           => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, bb: 20, interval: '15m', sl: 2.3, tp: 5.5, rsiBuy: 36, adx: 23),
-            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20, interval: '15m', sl: 2.3, tp: 5.5, rsiBuy: 35, adx: 25),
-            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20, interval: '1h',  sl: 2.8, tp: 7.0, rsiBuy: 35, adx: 25),
-            default              => $this->applyValues(emaFast: 20, emaSlow: 50, rsi: 14, interval: '15m', sl: 2.4, tp: 6.0, rsiBuy: 38, adx: 25),
+            'adaptive'           => $this->applyValues(emaFast: 9,  emaSlow: 21, rsi: 14, bb: 20, interval: '1h',  sl: 4.0, tp: 11.0, rsiBuy: 45, adx: 20),
+            'rsi_mean_reversion' => $this->applyValues(rsi: 14, bb: 20,           interval: '1h',  sl: 4.0, tp: 10.0, rsiBuy: 35, adx: 20),
+            'bb_squeeze'         => $this->applyValues(rsi: 14, bb: 20,           interval: '1h',  sl: 4.0, tp: 11.0, rsiBuy: 40, adx: 20),
+            default              => $this->applyValues(emaFast: 9,  emaSlow: 21, rsi: 14, bb: 20, interval: '1h',  sl: 4.0, tp: 11.0, rsiBuy: 45, adx: 20),
         };
 
-        $this->cooldownCandles   = '3';
-        $this->volumeMinRatio    = '1.1';
+        $this->cooldownCandles   = '2';
+        $this->volumeMinRatio    = '1.5';
         $this->trailingSlEnabled = true;
-        $this->trailingSlPercent = '1.8';
+        $this->trailingSlPercent = '2.5';
         $this->riskPercent       = '2';
-        $this->maxPositions      = '1';
+        $this->maxPositions      = '2';
     }
 
     private function applyValues(

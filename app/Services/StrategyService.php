@@ -5,7 +5,7 @@ namespace App\Services;
 class StrategyService
 {
     private const ADX_TREND_MIN  = 20.0;
-    private const EMA_SPREAD_MIN = 0.15;
+    private const EMA_SPREAD_MIN = 0.08;
 
     /**
      * Analyze indicators and return signal: 'buy', 'sell', or 'hold'.
@@ -270,20 +270,18 @@ class StrategyService
         // Gunakan threshold dari settings user, bukan konstanta global
         $isTrending = ($adx >= $adxTrendThreshold) && ($emaSpreadPct >= self::EMA_SPREAD_MIN);
         $trendStrengthImproving = $emaFast >= $prevEmaFast && $emaSlow >= $prevEmaSlow;
-        $rsiIsHealthy = $rsi >= max($rsiBuyThreshold, 38) && $rsi <= 60 && $rsi >= ($prevRsi - 1.5);
-        $volumeConfirmed = $volumeRatio >= max($volumeMinRatio, 1.15);
+        $rsiIsHealthy = $rsi >= $rsiBuyThreshold && $rsi <= 65 && $rsi >= ($prevRsi - 2.0);
+        $volumeConfirmed = $volumeRatio >= $volumeMinRatio;
 
         if ($isTrending && $price > $emaFast && $price > $emaSlow && $emaFast > $emaSlow
             && $trendStrengthImproving && $rsiIsHealthy && $isBullish
-            && $bodyRatio >= 0.30 && $priceChangePct <= 2.4
+            && $bodyRatio >= 0.25 && $priceChangePct <= 3.5
             && $volumeConfirmed
         ) {
             return 'buy';
         }
 
-        // EMA crossover sell via sinyal tidak digunakan (biarkan SL/TP)
-        // Menghindari exit terlalu dini di tengah trend
-        if ($price < $emaSlow && $emaFast < $emaSlow && $rsi > 70) {
+        if ($price < $emaSlow && $emaFast < $emaSlow && $rsi > 68) {
             return 'sell';
         }
 
